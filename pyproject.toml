@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shugonet"
+version = "0.1.0"
+description = "Networking integration for connecting multiple Shugocore agents together for collaboration between Shugocore agents in simulation and physical spaces, designed to be used over 5G, 4G, EDGE, LoRa, Wifi-Halow, Wifi, and Bluetooth networks."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "SamurAI-Official" }]
+keywords = ["agent", "networking", "mesh", "memory", "fallback", "shugocore"]
+# Stdlib-first: the core (loopback, TCP, protocol, memory mesh) has no deps.
+dependencies = []
+
+[project.optional-dependencies]
+ws = ["websocket-client>=1.6"]      # rosbridge-style WebSocket transport
+relay = ["requests>=2.32.0"]        # HTTPS relay transport (5G/4G/EDGE path)
+serial = ["pyserial>=3.5"]          # LoRa SX126x/SX127x serial modules
+ble = ["bleak>=0.20"]               # BLE transport where AF_BLUETOOTH is absent
+telemetry = ["opentelemetry-api>=1.20"]
+
+[tool.setuptools]
+py-modules = ["agent_registry", "audit", "bluetooth_transport", "discovery",
+              "fallbacks", "link_simulator", "lora_transport", "memory_sync",
+              "mesh_query", "policy", "protocol", "relay_server",
+              "relay_transport", "security", "shugocore_adapter",
+              "shugocore_bridge", "store_forward", "tcp_transport",
+              "telemetry", "transports", "transport_fallback", "version"]

@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.DS_Store
+# Runtime artifacts (journals, outboxes, audit chains) stay local
+*.wal.jsonl
+*.outbox.jsonl
+*.audit.jsonl
+*.db
