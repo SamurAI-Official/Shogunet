@@ -118,7 +118,7 @@ class NetworkFallbackController:
         with self._lock:
             self._violations.clear()
             self._conflict_window.clear()
-            self._mode = "normal"
+            self.mode = "normal"
         self._audit("network_fallback_resume",
                     {"resumed_by": str(resumed_by)[:120]})
 
