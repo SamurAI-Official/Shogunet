@@ -11,6 +11,26 @@
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Android%20%28Termux%2FChaquopy%29-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
+## Installation
+
+```bash
+pip install shugonet
+```
+
+The core is dependency-free (stdlib-only). Optional extras:
+
+```bash
+pip install shugonet[postgres]   # PostgreSQL mesh backend (PgSemanticMemory parity)
+pip install shugonet[ws]         # rosbridge-style WebSocket transport
+pip install shugonet[relay]      # HTTPS relay transport (5G/4G/EDGE)
+pip install shugonet[serial]     # LoRa SX126x/SX127x serial modules
+pip install shugonet[ble]        # BLE transport
+pip install shugonet[telemetry]  # OpenTelemetry integration
+```
+
+The compiled fleet dashboard ships inside the wheel — no JavaScript toolchain
+is needed at install time.
+
 Shogunet is the networking layer for [ShugoCore](https://github.com/SamurAI-Official/ShugoCore).
 It lets a fleet of ShugoCore agents — running in Gazebo simulation, on servers,
 on robots, or on Android handsets — discover each other, exchange tasks and
