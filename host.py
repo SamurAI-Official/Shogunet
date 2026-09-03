@@ -75,7 +75,11 @@ class ShugonetHost:
                  audit: Optional[AuditChain] = None,
                  store: Optional[InMemoryFactStore] = None,
                  hub_max_messages: int = 1024,
-                 heartbeat_timeout_s: float = 30.0):
+                 heartbeat_timeout_s: float = 30.0,
+                 dashboard_port: int = 0,
+                 dashboard_bind: str = "127.0.0.1",
+                 dashboard_token: Optional[str] = None,
+                 dashboard_static_dir: Optional[str] = None):
         self.agent_id = agent_id
         self.tcp_host = tcp_host
         self.tcp_port_wanted = int(tcp_port)
@@ -108,6 +112,12 @@ class ShugonetHost:
         self.relay = None
         self.chain: Optional[Any] = None
         self.mesh: Optional[MeshQuery] = None
+        # Operator plane: the fleet dashboard (stdlib HTTP + SSE + compiled SPA).
+        self.dashboard_port = max(0, int(dashboard_port))
+        self.dashboard_bind = str(dashboard_bind or "127.0.0.1")
+        self.dashboard_token = dashboard_token
+        self.dashboard_static_dir = dashboard_static_dir
+        self._dashboard: Optional[Any] = None
 
     # -- lifecycle -------------------------------------------------------------
 
@@ -121,11 +131,13 @@ class ShugonetHost:
         self._relay_url = f"http://{self.tcp_host}:{relay_port}"
         # TCP listener; admission consults the registry at every handshake.
         from relay_transport import RelayTransport
+        import version
         self.tcp = TCPTransport(
             self.agent_id, listen=True, listen_host=self.tcp_host,
             listen_port=self.tcp_port_wanted,
             admission_check=self.registry.is_paired, audit=self.audit,
-            on_connection_lost=self._on_peer_connection_lost)
+            on_connection_lost=self._on_peer_connection_lost,
+            version_check=version.is_compatible)
         self.relay = RelayTransport(self.agent_id, hub_url=self._relay_url)
         # Raw-frame routing: the forwarder sees every inbound frame from every
         # transport and re-sends addressed mail / fans broadcasts out. The
@@ -147,6 +159,20 @@ class ShugonetHost:
         self._loop_thread = threading.Thread(target=self._loop,
                                              name="sgn-host-loop", daemon=True)
         self._loop_thread.start()
+        # Operator plane after the data plane: the dashboard serves the host's
+        # status surface and streams audit events; a failure to bind it must
+        # not take the fleet down.
+        if self.dashboard_port > 0:
+            try:
+                from dashboard import DashboardServer
+                self._dashboard = DashboardServer(
+                    self, port=self.dashboard_port, bind=self.dashboard_bind,
+                    token=self.dashboard_token,
+                    static_dir=self.dashboard_static_dir)
+                self._dashboard.start()
+            except Exception as exc:
+                logger.warning("dashboard failed to start: %s", exc)
+                self._dashboard = None
         self._audit("host_started", {
             "agent_id": self.agent_id,
             "tcp_port": self.tcp_port, "relay_port": relay_port})
@@ -169,6 +195,12 @@ class ShugonetHost:
             self._relay_server = None
         self._relay_thread = None
         self._relay_url = None
+        if self._dashboard is not None:
+            try:
+                self._dashboard.stop()
+            except Exception:
+                pass
+            self._dashboard = None
         self._audit("host_stopped", {"agent_id": self.agent_id})
 
     def _loop(self) -> None:
@@ -277,20 +309,42 @@ class ShugonetHost:
     # -- operator surface -----------------------------------------------------
 
     def status(self) -> Dict[str, Any]:
+        import version
         roster = self.registry.list_agents()
+        # Client versions reported via the TCP handshake (relay-only peers
+        # report through their join manifest, surfaced below).
+        peer_versions = self.tcp.peer_versions() if self.tcp is not None else {}
+        relay_manifests = {}
+        try:
+            relay_manifests = {aid: info.get("manifest") or {}
+                               for aid, info in self.hub.agents().items()}
+        except Exception:
+            pass
+        for entry in roster:
+            aid = entry["agent_id"]
+            client_version = peer_versions.get(aid) \
+                or str(relay_manifests.get(aid, {}).get("shugonet_version", "")
+                       or "unknown")
+            entry["client_version"] = client_version
         return {
             "agent_id": self.agent_id,
+            "shugonet_version": version.VERSION,
+            "protocol_version": version.PROTOCOL_VERSION,
             "mode": self.mode,
             "mode_reason": self.mode_reason,
             "tcp_port": self.tcp_port,
             "relay_url": self._relay_url,
+            "dashboard_url": self._dashboard.url if self._dashboard else None,
             "roster": roster,
             "paired_count": len(roster),
             "alive_count": sum(1 for a in roster if a.get("alive")),
             "fallback": self.fallback.status(),
             "chain": self.chain.stats(),
+            "chain_health": self.chain.health(),
             "mesh": self.mesh.stats(),
             "store_count": self.store.count(),
+            "audit_len": len(self.audit),
+            "audit_tail": self.audit.tail,
         }
 
     def pair(self, agent_id: str, manifest: Optional[Dict[str, Any]] = None,
@@ -323,6 +377,12 @@ if __name__ == "__main__":
     parser.add_argument("--tcp-host", default="127.0.0.1")
     parser.add_argument("--tcp-port", type=int, default=9000)
     parser.add_argument("--relay-port", type=int, default=9001)
+    parser.add_argument("--dashboard-port", type=int, default=0,
+                        help="Serve the fleet dashboard on this port (e.g. 9002)")
+    parser.add_argument("--dashboard-bind", default="127.0.0.1",
+                        help="Dashboard bind address (loopback by default)")
+    parser.add_argument("--dashboard-token", default=None,
+                        help="Require this token on dashboard POST endpoints")
     parser.add_argument("--pair", action="append", default=[],
                         help="Pre-pair an agent ID (repeatable)")
     args = parser.parse_args()
@@ -331,13 +391,19 @@ if __name__ == "__main__":
     host = ShugonetHost(agent_id=args.agent_id,
                         tcp_host=args.tcp_host,
                         tcp_port=args.tcp_port,
-                        relay_port=args.relay_port)
+                        relay_port=args.relay_port,
+                        dashboard_port=args.dashboard_port,
+                        dashboard_bind=args.dashboard_bind,
+                        dashboard_token=args.dashboard_token)
     host.start()
     for agent_id in args.pair:
         host.pair(agent_id)
         print(f"paired: {agent_id}")
     print(f"Host '{args.agent_id}' ready — TCP :{args.tcp_port}, "
           f"relay :{args.relay_port}")
+    if args.dashboard_port:
+        print(f"Dashboard :{args.dashboard_port}"
+              f"{' (token required)' if args.dashboard_token else ''}")
     print("Press Ctrl-C to stop.")
     try:
         threading.Event().wait()

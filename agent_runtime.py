@@ -5,6 +5,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
+import version
 from audit import AuditChain
 from memory_sync import InMemoryFactStore, MemorySyncNode
 from mesh_query import MeshQuery
@@ -30,6 +31,9 @@ class ShugonetAgentRuntime:
         self.realm = realm
         self.manifest = dict(manifest or {})
         self.manifest.setdefault("realm", realm)
+        # Version handshake for the relay path: the host surfaces this from
+        # the join manifest (TCP peers report via the announce frame instead).
+        self.manifest.setdefault("shugonet_version", version.VERSION)
         self.store = store or InMemoryFactStore(agent_id)
         self.audit = audit
         self.on_message = on_message
@@ -167,6 +171,7 @@ class ShugonetAgentRuntime:
             stats = dict(self._stats)
         return {
             "agent_id": self.agent_id,
+            "shugonet_version": version.VERSION,
             "running": self._running,
             "realm": self.realm,
             "stats": stats,

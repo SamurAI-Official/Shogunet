@@ -37,12 +37,13 @@ _LEN_SIZE = 4
 class _Connection:
     """One established TCP peer connection (pre- or post-handshake)."""
 
-    __slots__ = ("sock", "addr", "agent_id", "lock")
+    __slots__ = ("sock", "addr", "agent_id", "client_version", "lock")
 
     def __init__(self, sock: socket.socket, addr: Tuple[str, int]):
         self.sock = sock
         self.addr = addr
         self.agent_id: Optional[str] = None
+        self.client_version: str = ""
         self.lock = threading.Lock()
 
 
@@ -56,7 +57,8 @@ class TCPTransport(BaseTransport):
                  profile: str = "wifi", max_queue: int = 256,
                  connect_timeout_s: float = 5.0, audit: Optional[object] = None,
                  admission_check: Optional[Callable[[str], bool]] = None,
-                 on_connection_lost: Optional[Callable[[str], None]] = None):
+                 on_connection_lost: Optional[Callable[[str], None]] = None,
+                 version_check: Optional[Callable[[str], bool]] = None):
         self.agent_id = sanitize_text(agent_id, 48).strip()
         if not self.agent_id:
             raise ValueError("agent_id required")
@@ -69,6 +71,11 @@ class TCPTransport(BaseTransport):
         # connection is torn down. Used by the host to detect peer loss
         # immediately instead of waiting for heartbeat TTL expiry.
         self._on_connection_lost = on_connection_lost
+        # Version handshake: when set, the announce's ``shugonet_version``
+        # must pass this hook (the host passes version.is_compatible) or the
+        # connection is refused and audited. Peers that send no version
+        # (pre-0.4.0) are admitted but reported as version "unknown".
+        self._version_check = version_check
         self._listen = bool(listen)
         self._listen_host = str(listen_host)
         self._listen_port = max(0, min(65535, int(listen_port)))
@@ -90,13 +97,21 @@ class TCPTransport(BaseTransport):
     # -- lifecycle ---------------------------------------------------------------
 
     def _build_announce(self) -> None:
+        import version
         env = Envelope(msg_id=new_msg_id(), msg_type="announce",
                        sender=self.agent_id, recipient="*",
-                       payload={"port": self.local_port})
+                       payload={"port": self.local_port,
+                                "shugonet_version": version.VERSION})
         self._announce_frame = encode(env, CODEC_COMPACT)
 
     def is_available(self) -> bool:
         return self._running
+
+    def peer_versions(self) -> Dict[str, str]:
+        """shugonet version reported by each handshaken peer's announce."""
+        with self._state_lock:
+            return {aid: conn.client_version
+                    for aid, conn in self._conns.items() if aid}
 
     def start(self) -> None:
         with self._state_lock:
@@ -255,7 +270,20 @@ class TCPTransport(BaseTransport):
                 self._audit("tcp_admission_refused",
                             {"agent_id": env.sender, "addr": str(conn.addr)})
                 raise ConnectionError("agent not paired")
+            client_version = str(env.payload.get("shugonet_version", "") or "")
+            if client_version and self._version_check is not None \
+                    and not self._version_check(client_version):
+                # Version handshake: an incompatible client is refused at the
+                # door too -- protocol drift must never enter the fleet.
+                self._stats["handshake_refused"] += 1
+                import version
+                self._audit("version_mismatch",
+                            {"agent_id": env.sender, "addr": str(conn.addr),
+                             "client_version": client_version[:16],
+                             "host_version": version.VERSION})
+                raise ConnectionError("incompatible shugonet version")
             conn.agent_id = env.sender
+            conn.client_version = client_version or "unknown"
             port = env.payload.get("port")
             with self._state_lock:
                 self._awaiting.pop(str(conn.addr), None)

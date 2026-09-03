@@ -28,9 +28,12 @@ Memory invariants over the wire (unchanged from ShugoCore):
   stays an operator-attributed privileged step at the receiving agent.
 """
 
+import base64
 import hashlib
 import logging
 import math
+import re
+import struct
 import threading
 import time
 from enum import Enum
@@ -44,6 +47,7 @@ logger = logging.getLogger(__name__)
 
 MAX_FACT_CONTENT = 4096
 MAX_FACTS_PER_DIGEST = 32
+MAX_VECTOR_DIM = 256
 
 
 class SharingProfile(Enum):
@@ -54,19 +58,35 @@ class SharingProfile(Enum):
     FULL = "full-share"            # full content + vector
 
 
-def _embed(text: str, dimension: int = 64) -> List[float]:
-    """Deterministic hashing vector (ShugoCore-style, dependency-free).
+def hashed_embedding(text: str, dimension: int = 256,
+                     normalize: bool = True) -> List[float]:
+    """Deterministic hashing bag-of-words embedding, ShugoCore-compatible.
 
-    Stable across agents for the same text: the same tokens hash to the same
-    vector, which is exactly why facts sync without an embedding service.
+    This is an exact port of ShugoCore ``vector_db.hashed_embedding`` (which
+    itself mirrors ``SemanticMemory._embed``): tokens are ``[a-z0-9]+`` runs,
+    each token's sha256 picks one bucket (``digest % dimension``) and a sign
+    (bit 128), L2-normalized. Vectors produced here are directly comparable
+    with ShugoCore Tier-2 vectors -- mesh facts, ``PgSemanticMemory`` rows and
+    local ``SemanticMemory`` facts all land in the same cosine space without
+    any embedding service, on any transport.
+
+    ``memory_sync._embed`` remains as a back-compat alias.
     """
-    vec = [0.0] * max(8, int(dimension))
-    for token in str(text).split():
-        digest = hashlib.sha256(token.lower().encode("utf-8")).digest()
-        for i in range(len(vec)):
-            vec[i] += (digest[i % len(digest)] / 255.0) - 0.5
-    norm = math.sqrt(sum(v * v for v in vec)) or 1.0
-    return [v / norm for v in vec]
+    vector = [0.0] * int(dimension)
+    for token in re.findall(r"[a-z0-9]+", str(text).lower()):
+        digest = int(hashlib.sha256(token.encode("utf-8")).hexdigest(), 16)
+        index = digest % int(dimension)
+        sign = 1.0 if (digest >> 128) & 1 else -1.0
+        vector[index] += sign
+    if normalize:
+        norm = math.sqrt(sum(v * v for v in vector))
+        if norm > 0:
+            vector = [v / norm for v in vector]
+    return vector
+
+
+# Back-compat alias: older call sites embed via _embed(text, dimension).
+_embed = hashed_embedding
 
 
 def _cosine(a: List[float], b: List[float]) -> float:
@@ -83,6 +103,31 @@ def fact_digest(origin: str, fact_id: object) -> str:
     """Anti-entropy digest of one networked fact key."""
     key = f"{sanitize_text(origin, 48)}:{int(fact_id) & 0xFFFFFFFF}"
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+
+
+def pack_vector(vec: List[float]) -> str:
+    """Pack a vector for the wire as base64 little-endian float32.
+
+    The protocol bounds payload *lists* at 64 items (DoS bound), so a
+    256-dim embedding cannot travel as a JSON list; packed base64 keeps it
+    inside ``MAX_STR_VALUE`` (~1.4 KB for 256 dims) and lossless to float32.
+    """
+    clamped = [_clamp_float(x) for x in list(vec)[:MAX_VECTOR_DIM]]
+    return base64.b64encode(
+        struct.pack("<%df" % len(clamped), *clamped)).decode("ascii")
+
+
+def unpack_vector(value: Any) -> Optional[List[float]]:
+    """Unpack a ``pack_vector`` string; None when absent/corrupt."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        raw = base64.b64decode(value, validate=True)
+    except (ValueError, TypeError):
+        return None
+    if len(raw) % 4 or len(raw) // 4 > MAX_VECTOR_DIM:
+        return None
+    return list(struct.unpack("<%df" % (len(raw) // 4), raw))
 
 
 def _clamp_float(value: Any, default: float = 0.0) -> float:
@@ -102,7 +147,7 @@ class InMemoryFactStore:
     ``shugocore_bridge`` later swaps this for the real store.
     """
 
-    def __init__(self, agent_id: str, dimension: int = 64):
+    def __init__(self, agent_id: str, dimension: int = MAX_VECTOR_DIM):
         self.agent_id = sanitize_text(agent_id, 48).strip()
         self.dimension = max(8, int(dimension))
         self._facts: Dict[str, Dict[str, Any]] = {}
@@ -127,7 +172,9 @@ class InMemoryFactStore:
                    vector: Optional[List[float]] = None,
                    salience: float = 1.0, fact_id: Optional[int] = None,
                    origin: Optional[str] = None,
-                   metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                   metadata: Optional[Dict[str, Any]] = None,
+                   created_at: Optional[float] = None,
+                   last_accessed: Optional[float] = None) -> Dict[str, Any]:
         """Store a fact and return it. Local facts get an auto id; foreign
         facts (origin set) are stored under their origin's id."""
         content = sanitize_text(content, MAX_FACT_CONTENT)
@@ -142,6 +189,17 @@ class InMemoryFactStore:
         else:
             key = self._foreign_key(origin, int(fact_id))
         vec = list(vector) if vector else _embed(content, self.dimension)
+        now = time.time()
+        # Networked facts carry their origin's clock so LWW ordering and
+        # age-based decay survive the hop (bounded/sanitized on the way in).
+        if created_at is not None and 0.0 <= float(created_at) <= now:
+            created_at = float(created_at)
+        else:
+            created_at = now
+        if last_accessed is not None and created_at <= float(last_accessed) <= now:
+            last_accessed = float(last_accessed)
+        else:
+            last_accessed = now
         fact = {
             "key": key,
             "fact_id": int(fact_id),
@@ -152,7 +210,12 @@ class InMemoryFactStore:
             "vector": vec,
             "metadata": dict(metadata or {}),
             "access_count": 0,
-            "updated_at": time.time(),
+            # Timestamp columns mirror ShugoCore SemanticMemory / PgSemanticMemory
+            # (created_at, last_accessed) so mesh facts round-trip into a
+            # fleet-shared PostgreSQL Tier-2 store without field loss.
+            "created_at": created_at,
+            "last_accessed": last_accessed,
+            "updated_at": now,
         }
         with self._lock:
             self._facts[key] = fact
@@ -161,6 +224,8 @@ class InMemoryFactStore:
     def get_fact(self, key: str) -> Optional[Dict[str, Any]]:
         with self._lock:
             fact = self._facts.get(str(key))
+            if fact is not None:
+                fact["last_accessed"] = time.time()
         return dict(fact) if fact else None
 
     def remove(self, key: str) -> bool:
@@ -184,6 +249,7 @@ class InMemoryFactStore:
                min_salience: float = 0.0) -> List[Dict[str, Any]]:
         q_vec = _embed(query, self.dimension)
         scored = []
+        now = time.time()
         with self._lock:
             facts = list(self._facts.values())
         for fact in facts:
@@ -192,7 +258,15 @@ class InMemoryFactStore:
             score = _cosine(q_vec, fact["vector"]) * fact["salience"]
             scored.append((score, dict(fact)))
         scored.sort(key=lambda pair: pair[0], reverse=True)
-        return [fact for _score, fact in scored[: max(0, int(top_k))]]
+        results = [fact for _score, fact in scored[: max(0, int(top_k))]]
+        # Retrieval is access: mirror SemanticMemory's last_accessed touch so
+        # decay/prune policies behave identically on mesh and local facts.
+        with self._lock:
+            for fact in results:
+                stored = self._facts.get(fact["key"])
+                if stored is not None:
+                    stored["last_accessed"] = now
+        return results
 
     def facts_by_kind(self, kind: str) -> List[Dict[str, Any]]:
         with self._lock:
@@ -234,13 +308,19 @@ class MemorySyncNode:
                  profiles: Optional[Dict[str, SharingProfile]] = None,
                  default_profile: SharingProfile = SharingProfile.FULL,
                  audit: Optional[Any] = None,
-                 on_synced: Optional[Callable[[Dict[str, Any]], None]] = None):
+                 on_synced: Optional[Callable[[Dict[str, Any]], None]] = None,
+                 backend: Optional[Any] = None):
         self.agent_id = sanitize_text(agent_id, 48).strip()
         if not self.agent_id:
             raise ValueError("agent_id required")
         self.chain = chain
         self.store = store
         self.prot_agent_id = self.agent_id
+        # Optional persistence half of the mesh (duck-typed like ShugoCore's
+        # PgSemanticMemory): every applied/reinforced/removed mesh fact is
+        # mirrored via backend.upsert_fact(fact) / backend.remove(key) so a
+        # fleet-shared Tier-2 store stays consistent with the wire state.
+        self.backend = backend
         self.default_profile = default_profile
         self.profiles = {k: (v if isinstance(v, SharingProfile)
                              else SharingProfile(str(v)))
@@ -264,6 +344,28 @@ class MemorySyncNode:
     def profile_for(self, peer_id: str) -> SharingProfile:
         return self.profiles.get(sanitize_text(peer_id, 48),
                                  self.default_profile)
+
+    # -- backend mirror ---------------------------------------------------------
+
+    def _backend_upsert(self, key: str) -> None:
+        """Mirror one store fact into the persistence backend (if any)."""
+        if self.backend is None:
+            return
+        fact = self.store.get_fact(key)
+        if fact is None:
+            return
+        try:
+            self.backend.upsert_fact(fact)
+        except Exception:
+            logger.warning("memory backend upsert failed", exc_info=True)
+
+    def _backend_remove(self, key: str) -> None:
+        if self.backend is None:
+            return
+        try:
+            self.backend.remove(key)
+        except Exception:
+            logger.warning("memory backend remove failed", exc_info=True)
 
     # -- reactive: inbound -------------------------------------------------------
 
@@ -303,10 +405,27 @@ class MemorySyncNode:
             return                      # a loop: ignore our own facts
         key = self.store.make_key(origin, fact_id)
         existing = self.store.get_fact(key)
+        incoming_metadata = payload.get("metadata")
+        incoming_metadata = dict(incoming_metadata) \
+            if isinstance(incoming_metadata, dict) and len(incoming_metadata) <= 16 \
+            else {}
+        try:
+            incoming_created = float(payload.get("created_at", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            incoming_created = 0.0
+        # Prefer the packed vector; tolerate the legacy JSON-list form from
+        # older peers; otherwise the receiver re-embeds from content (the
+        # embedding is deterministic and fleet-shared, so this is lossless).
+        incoming_vector = unpack_vector(payload.get("vector_b64"))
+        if incoming_vector is None:
+            legacy = payload.get("vector")
+            if isinstance(legacy, list) and legacy \
+                    and len(legacy) <= MAX_PAYLOAD_ITEMS:
+                incoming_vector = [_clamp_float(x) for x in legacy]
         incoming = {
             "content": sanitize_text(content, MAX_FACT_CONTENT),
             "kind": sanitize_text(payload.get("kind", "fact"), 32),
-            "vector": payload.get("vector"),
+            "vector": incoming_vector,
             "salience": max(0.0, float(payload.get("salience", 1.0))),
         }
         if existing is None:
@@ -314,9 +433,12 @@ class MemorySyncNode:
                                   kind=incoming["kind"],
                                   vector=incoming["vector"],
                                   salience=incoming["salience"],
-                                  fact_id=fact_id, origin=origin)
-            fact = self.store.get_fact(key)
+                                  fact_id=fact_id, origin=origin,
+                                  metadata=incoming_metadata,
+                                  created_at=incoming_created or None)
             self._stats["facts_received"] += 1
+            self._backend_upsert(key)
+            fact = self.store.get_fact(key)
             if self.on_synced is not None:
                 try:
                     self.on_synced(fact)
@@ -324,20 +446,25 @@ class MemorySyncNode:
                     logger.warning("on_synced callback failed", exc_info=True)
             return
         if existing["content"] != incoming["content"]:
-            # Last-writer-wins on content; salience merges as max.
+            # Last-writer-wins on content; salience merges as max. The fact
+            # keeps its original creation clock (identity), like SemanticMemory.
             self.store.store_fact(content=incoming["content"],
                                   kind=incoming["kind"],
                                   vector=incoming["vector"],
                                   salience=max(existing["salience"],
                                                incoming["salience"]),
-                                  fact_id=fact_id, origin=origin)
+                                  fact_id=fact_id, origin=origin,
+                                  metadata=incoming_metadata or existing.get("metadata"),
+                                  created_at=existing.get("created_at"))
             self._stats["conflicts_resolved"] += 1
+            self._backend_upsert(key)
             self._audit("memory_conflict_resolved",
                         {"key": key, "origin": origin})
             return
         # Same content: additive reinforcement -- the memory proved durable
         # across the fleet, so it ranks a little higher everywhere.
         self.store.reinforce(key, boost=0.05)
+        self._backend_upsert(key)
 
     def _on_reinforce(self, env: protocol.Envelope) -> None:
         origin = sanitize_text(env.payload.get("origin") or env.sender, 48)
@@ -353,6 +480,7 @@ class MemorySyncNode:
             boost = 0.25
         if self.store.reinforce(key, boost=boost) is not None:
             self._stats["reinforces_applied"] += 1
+            self._backend_upsert(key)
 
     def _on_tombstone(self, env: protocol.Envelope) -> None:
         origin = sanitize_text(env.payload.get("origin") or env.sender, 48)
@@ -365,6 +493,7 @@ class MemorySyncNode:
         if self.store.get_fact(key) is not None:
             self.store.remove(key)
             self._stats["tombstones_applied"] += 1
+            self._backend_remove(key)
         # Remember so a stale peer cannot resurrect it during this session.
         self._tombstones[key] = time.monotonic()
 
@@ -410,9 +539,18 @@ class MemorySyncNode:
             "salience": max(0.0, float(fact.get("salience", 1.0))),
             "origin": origin,
         }
+        created_at = fact.get("created_at")
+        if isinstance(created_at, (int, float)) and float(created_at) > 0:
+            payload["created_at"] = float(created_at)
+        metadata = fact.get("metadata")
+        if isinstance(metadata, dict) and 0 < len(metadata) <= 16:
+            payload["metadata"] = metadata
         vec = fact.get("vector")
         if isinstance(vec, list) and vec:
-            payload["vector"] = [_clamp_float(x) for x in vec[:64]]
+            # Packed base64 float32: a 256-dim ShugoCore-parity embedding is
+            # ~1.4 KB, inside MAX_STR_VALUE. The receiver may also simply
+            # re-embed (deterministic shared algorithm) when this is absent.
+            payload["vector_b64"] = pack_vector(vec)
         if peers is not None:
             for peer in peers:
                 profile = self.profile_for(peer)

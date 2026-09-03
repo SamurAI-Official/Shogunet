@@ -5,6 +5,7 @@ dist/
 build/
 .venv/
 venv/
+node_modules/
 .DS_Store
 # Runtime artifacts (journals, outboxes, audit chains) stay local
 *.wal.jsonl

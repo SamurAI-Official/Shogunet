@@ -6,7 +6,7 @@
 > networks.
 
 [![PyPI](https://img.shields.io/pypi/v/shugonet)](https://pypi.org/project/shugonet/)
-![Release](https://img.shields.io/badge/release-v0.1.0-blue)
+![Release](https://img.shields.io/badge/release-v0.4.0-blue)
 ![Python](https://img.shields.io/badge/python-3.9%E2%80%933.12-blue)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Android%20%28Termux%2FChaquopy%29-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -152,12 +152,39 @@ of its own, so the host re-checks the sender there).
 - **Cross-talk** → chain and mesh recipient guards (hardened in the
   concurrency suite) hold at host scale.
 
+### Fleet dashboard
+
+Every `ShugunetHost` can expose an operator console — a compiled single-page
+app (TypeScript + SolidJS, built with Vite) served directly by the host over a
+loopback HTTP port. No JavaScript toolchain is needed at install time: the
+built assets ship inside the wheel (`shugonet_web/static`).
+
+```python
+host = ShugonetHost(agent_id="fleet-1", tcp_port=9000, relay_port=9001,
+                    dashboard_port=9002)
+host.start()
+# open http://127.0.0.1:9002 in a browser
+```
+
+The console streams a live event feed (Server-Sent Events), shows the roster,
+transport-chain health, memory-mesh counters, and audit-chain integrity, and
+exposes pair / unpair / resume / broadcast controls. State-changing POSTs are
+audited and can be gated by a token (`dashboard_token=...`).
+
+The SPA source lives in `dashboard/`; rebuild it with:
+
+```bash
+cd dashboard && npm ci && npm run build
+```
+
 ## Module map (continued)
 
 | Module | Responsibility |
 |---|---|
-| `host.py` | `ShugonetHost`: admit paired agents, route traffic, seed the mesh |
+| `host.py` | `ShugunetHost`: admit paired agents, route traffic, seed the mesh |
 | `agent_runtime.py` | `ShugonetAgentRuntime`: client half a ShugoCore process instantiates |
+| `dashboard.py` | `DashboardServer`: stdlib HTTP operator plane (REST + SSE + SPA) |
+| `pg_store.py` | `PgFactStore`: optional PostgreSQL mesh backend (ShugoCore `PgSemanticMemory` parity) |
 
 ## Testing
 
@@ -171,3 +198,22 @@ network's bandwidth, latency, loss, MTU and duty-cycle constraints. The
 integration suite spins up a real `ShugonetHost` with multiple threaded
 `ShugonetAgentRuntime` clients, validates cross-talk isolation, memory
 convergence, peer-lost latching, and unpaired-agent refusal.
+
+## Changelog
+
+### 0.4.0
+
+- **Fleet dashboard**: stdlib HTTP operator plane (`dashboard.py`) with a
+  compiled TypeScript + SolidJS SPA (`dashboard/` → `shugonet_web/static`).
+  Serves JSON REST, a live SSE event stream, and the console; ships inside the
+  wheel so no JS toolchain is needed at install time.
+- **ShugoCore memory compatibility**: fact schema aligned with
+  `SemanticMemory` / `PgSemanticMemory` columns (`kind`, `metadata`,
+  `created_at`); `pg_store.PgFactStore` mirrors mesh facts into PostgreSQL
+  (optional `postgres` extra).
+- **Version handshake**: `shugonet_version` + `protocol_version` exchanged at
+  TCP admission; mismatches emit a `version_mismatch` audit event and refuse
+  the join.
+- **Bridge sync test**: `tests/test_bridge_sync.py` keeps Shogunet's
+  `shugocore_adapter` and ShugoCore's vendored `shugonet_bridge` from drifting.
+- Version bumped 0.1.0 → 0.4.0.

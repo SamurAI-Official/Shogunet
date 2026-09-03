@@ -23,7 +23,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,9 @@ class AuditChain:
         self._lock = threading.Lock()
         self._seq = 0
         self._tail = GENESIS_HASH
+        # Live tail subscribers (the fleet dashboard's SSE feed). Callbacks
+        # receive every appended record dict; subscriber failures are ignored.
+        self._subscribers: List[Callable[[Dict[str, Any]], None]] = []
         self._load_existing()
 
     # -- internals -----------------------------------------------------------
@@ -78,6 +81,10 @@ class AuditChain:
 
 # -- surface ---------------------------------------------------------------
 
+    def subscribe(self, callback: Callable[[Dict[str, Any]], None]) -> None:
+        """Register a live-tail callback invoked with every new record."""
+        self._subscribers.append(callback)
+
     def append(self, event_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Append an event; the chain hash closes over the previous record."""
         with self._lock:
@@ -97,7 +104,14 @@ class AuditChain:
             except OSError as exc:
                 # A failed audit write must never crash the message path.
                 logger.warning("audit append failed: %s", exc)
-            return dict(record)
+        # Notify outside the lock: a slow subscriber must never stall the
+        # audited code path, and its failures must never surface here.
+        for callback in list(self._subscribers):
+            try:
+                callback(record)
+            except Exception:
+                logger.warning("audit subscriber failed", exc_info=True)
+        return dict(record)
 
     def verify(self) -> List[Dict[str, Any]]:
         """Walk the chain; returns a list of one dict per problem found."""
