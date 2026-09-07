@@ -154,6 +154,39 @@ runtime.stop()
 
 ### Cross-platform CLI client
 
+### Spatial awareness (3D multi-agent tracking)
+
+Shogunet includes a built-in spatial awareness system for tracking entities
+across a multi-agent fleet in 3D space:
+
+- **Spatial observations**: agents publish observations of entities (robots,
+  obstacles, people) with 3D coordinates, confidence, and labels.
+- **Octree spatial index**: fast sphere and AABB queries over the indexed
+  volume. Thread-safe for concurrent insert/query.
+- **Multi-agent fusion**: when multiple agents observe the same entity,
+  confidence-weighted centroid fusion merges their views into a single
+  consolidated position.
+- **Position-enriched heartbeats**: agents can set their own position;
+  it rides piggyback in heartbeat messages so the host tracks the whole
+  fleet's positions without extra messages.
+- **Coordinate frames**: transforms between local and world frames are
+  shared via ``coordinate_frame`` messages.
+
+CLI spatial commands:
+
+```bash
+# Observe an entity
+shugonet-client observe robot-1 10.0 20.0 0.0 --label robot --confidence 0.95
+
+# View the fleet's spatial map
+shugonet-client map
+
+# Locate a specific agent
+shugonet-client locate agent-a
+
+# Find what's near a point
+shugonet-client nearby 10.0 20.0 0.0 5.0
+```
 Shogunet ships a standard CLI client that works on macOS, Linux, and Windows:
 
 ```bash
@@ -251,6 +284,8 @@ cd dashboard && npm ci && npm run build
 | `host.py` | `ShugunetHost`: admit paired agents, route traffic, seed the mesh |
 | `shugonet_runtime.py` | `ShugonetAgentRuntime`: client half a ShugoCore process instantiates |
 | `shugonet_client.py`  | `ShugonetClient`: cross-platform CLI and programmatic client |
+| `spatial.py`          | `SpatialIndex`: octree-based 3D spatial index, fusion engine |
+| `spatial_sync.py`     | `SpatialMemoryNode`: cross-agent spatial observation sharing |
 | `dashboard.py` | `DashboardServer`: stdlib HTTP operator plane (REST + SSE + SPA) |
 | `pg_store.py` | `PgFactStore`: optional PostgreSQL mesh backend (ShugoCore `PgSemanticMemory` parity) |
 
@@ -275,12 +310,17 @@ convergence, peer-lost latching, and unpaired-agent refusal.
   ``shugonet_runtime.py`` to avoid naming collision with ShugoCore's own
   ``agent_runtime`` module. All imports updated accordingly.
 - **Cross-platform CLI client**: ``shugonet-client`` command (installed by
-  ``pip``) with ``run``, ``status``, ``send``, ``query``, and ``sync``
-  subcommands. Configured via ``SHUGONET_*`` environment variables. Works
-  on macOS, Linux, and Windows.
+  ``pip``) with ``run``, ``status``, ``send``, ``query``, ``sync``,
+  ``observe``, ``map``, ``locate``, and ``nearby`` subcommands.
 - **Standard programmatic client**: ``shugonet_client.ShugonetClient`` wraps
   the full runtime in a simple ``connect()`` / ``send()`` / ``disconnect()``
   interface.
+- **3D spatial awareness**: ``spatial.py`` provides ``SpatialIndex`` (octree
+  with sphere/AABB queries and confidence-weighted fusion);
+  ``spatial_sync.py`` provides ``SpatialMemoryNode`` for cross-agent
+  observation sharing. Agent positions ride piggyback on heartbeats.
+- **New protocol messages**: ``spatial_observation``, ``spatial_query``,
+  ``spatial_response``, ``spatial_merge``, ``coordinate_frame``.
 - Version bumped 0.4.0 → 0.5.0.
 
 ### 0.4.0

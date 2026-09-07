@@ -96,6 +96,11 @@ MESSAGE_TYPES = {
     "promotion_proposal": 11,
     "bulk_snapshot": 12,
     "audit_ship": 13,
+    "spatial_observation": 14,
+    "spatial_query": 15,
+    "spatial_response": 16,
+    "spatial_merge": 17,
+    "coordinate_frame": 18,
 }
 TYPE_NAMES = {v: k for k, v in MESSAGE_TYPES.items()}
 
@@ -115,6 +120,11 @@ TYPE_CLASS = {
     "task_request": CLASS_TASK, "task_result": CLASS_TASK,
     "promotion_proposal": CLASS_TASK,
     "bulk_snapshot": CLASS_BULK, "audit_ship": CLASS_BULK,
+    "spatial_observation": CLASS_MEMORY,
+    "spatial_query": CLASS_TASK,
+    "spatial_response": CLASS_MEMORY,
+    "spatial_merge": CLASS_BULK,
+    "coordinate_frame": CLASS_CONTROL,
 }
 
 # Payload field registry for the compact codec. Field 0 ("_blob") is the
@@ -125,6 +135,8 @@ FIELD_NAMES = {
     "query": 10, "top_k": 11, "results": 12, "task": 13, "status": 14,
     "error": 15, "manifest": 16, "count": 17, "since": 18, "grants": 19,
     "reason": 20, "ttl": 21, "qos": 22, "realm": 23, "port": 24,
+    "entity_id": 25, "frame_id": 26, "confidence": 27, "orientation": 28,
+    "size": 29, "observations": 30,
 }
 FIELD_IDS = {v: k for k, v in FIELD_NAMES.items()}
 

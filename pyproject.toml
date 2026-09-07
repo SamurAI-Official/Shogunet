@@ -31,6 +31,7 @@ py-modules = ["agent_registry", "audit", "bluetooth_transport", "dashboard",
               "memory_sync", "mesh_query", "pg_store", "policy", "protocol",
               "relay_server", "relay_transport", "security", "shugocore_adapter",
               "shugocore_bridge", "shugonet_client", "shugonet_runtime",
+              "spatial", "spatial_sync",
               "store_forward", "tcp_transport", "telemetry", "transports",
               "transport_fallback", "version"]
 packages = ["shugonet_web"]

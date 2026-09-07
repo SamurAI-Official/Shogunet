@@ -11,6 +11,8 @@ from memory_sync import InMemoryFactStore, MemorySyncNode
 from mesh_query import MeshQuery
 from protocol import Envelope, new_msg_id
 from relay_transport import RelayTransport
+from spatial import SpatialIndex
+from spatial_sync import SpatialMemoryNode
 from store_forward import OutboxStore
 from tcp_transport import TCPTransport
 from transport_fallback import TransportChain
@@ -46,6 +48,9 @@ class ShugonetAgentRuntime:
         self.chain = None
         self.mesh = None
         self.sync_node = None
+        self.spatial = SpatialIndex()
+        self.spatial_sync = None
+        self._own_position = None  # (x, y, z, frame_id) tuple or None
         self._stats = {"sent": 0, "received": 0, "errors": 0}
         self._lock = threading.Lock()
 
@@ -73,6 +78,8 @@ class ShugonetAgentRuntime:
         self.sync_node = MemorySyncNode(
             self.agent_id, self.chain, self.store)
         self.mesh = MeshQuery(self.agent_id, self.chain, self.store)
+        self.spatial_sync = SpatialMemoryNode(
+            self.agent_id, self.chain, self.spatial)
         self._running = True
         self._stop.clear()
         self._loop_thread = threading.Thread(
@@ -111,10 +118,18 @@ class ShugonetAgentRuntime:
                 self._stop.wait(0.1)
 
     def _send_heartbeat(self):
+        payload = {"ts": time.time()}
+        if self._own_position is not None:
+            x, y, z, frame_id = self._own_position
+            payload["position"] = {
+                "x": x, "y": y, "z": z,
+                "frame": frame_id,
+                "confidence": 1.0,
+            }
         env = Envelope(msg_id=new_msg_id(), msg_type="heartbeat",
                        sender=self.agent_id, recipient="*",
                        topic=f"/shugunet/{self.agent_id}/heartbeat",
-                       payload={"ts": time.time()})
+                       payload=payload)
         try:
             self.chain.send(env, qos="best_effort")
         except Exception:
@@ -178,4 +193,58 @@ class ShugonetAgentRuntime:
             "store_count": self.store.count(),
             "outbox_pending": len(self.outbox),
             "chain": self.chain.stats() if self.chain else {},
+            "spatial_observations": self.spatial.stats().get("inserts", 0),
+            "own_position": self._own_position,
+        }
+
+    # -- spatial awareness ----------------------------------------------------
+
+    def set_position(self, x, y, z, frame_id="world"):
+        """Set the agent's own estimated position (sent in heartbeats)."""
+        self._own_position = (float(x), float(y), float(z), str(frame_id))
+
+    def publish_observation(self, entity_id, x, y, z,
+                            confidence=1.0, label="", frame_id="world"):
+        """Publish a spatial observation to the fleet."""
+        if self.spatial_sync is None:
+            return {"status": "refused", "reason": "not connected"}
+        from spatial import SpatialObservation
+        import time as _t
+        obs = SpatialObservation(entity_id=entity_id,
+                                 agent_id=self.agent_id,
+                                 x=float(x), y=float(y), z=float(z),
+                                 confidence=float(confidence),
+                                 timestamp=_t.time(),
+                                 frame_id=str(frame_id) or "world",
+                                 label=str(label))
+        ok = self.spatial_sync.publish_observation(obs)
+        return {"status": "success" if ok else "failed"}
+
+    def get_fleet_map(self):
+        """Return the consolidated spatial view of the fleet."""
+        if self.spatial_sync is None:
+            return {}
+        return self.spatial_sync.get_fleet_map()
+
+    def query_nearby(self, x, y, z, radius):
+        """Query spatial observations near a point."""
+        if self.spatial_sync is None:
+            return []
+        return [o.to_dict() for o
+                in self.spatial_sync.query_nearby(x, y, z, radius)]
+
+    def status(self):
+        with self._lock:
+            stats = dict(self._stats)
+        return {
+            "agent_id": self.agent_id,
+            "shugonet_version": version.VERSION,
+            "running": self._running,
+            "realm": self.realm,
+            "stats": stats,
+            "store_count": self.store.count(),
+            "outbox_pending": len(self.outbox),
+            "chain": self.chain.stats() if self.chain else {},
+            "spatial_observations": self.spatial.stats().get("inserts", 0),
+            "own_position": self._own_position,
         }

@@ -288,6 +288,39 @@ def _parse_cli() -> Dict[str, Any]:
         help="Peer agent ID (default: broadcast)",
     )
 
+# observe — one-shot spatial observation
+    obs_parser = subparsers.add_parser(
+        "observe", help="Publish a spatial observation"
+    )
+    obs_parser.add_argument("entity_id", help="Entity identifier")
+    obs_parser.add_argument("x", type=float, help="X coordinate")
+    obs_parser.add_argument("y", type=float, help="Y coordinate")
+    obs_parser.add_argument("z", type=float, help="Z coordinate")
+    obs_parser.add_argument("--confidence", type=float, default=1.0,
+                            help="Observation confidence (0-1)")
+    obs_parser.add_argument("--label", default="",
+                            help="Human-readable label")
+    obs_parser.add_argument("--frame-id", default="world",
+                            help="Coordinate frame")
+
+    # map — consolidated fleet spatial view
+    subparsers.add_parser("map", help="Show the fleet's spatial map")
+
+    # locate — find an agent's position
+    locate_parser = subparsers.add_parser(
+        "locate", help="Show one agent's position"
+    )
+    locate_parser.add_argument("agent_id", help="Agent to locate")
+
+    # nearby — spatial query near a point
+    nearby_parser = subparsers.add_parser(
+        "nearby", help="Query observations near a point"
+    )
+    nearby_parser.add_argument("x", type=float, help="X coordinate")
+    nearby_parser.add_argument("y", type=float, help="Y coordinate")
+    nearby_parser.add_argument("z", type=float, help="Z coordinate")
+    nearby_parser.add_argument("radius", type=float,
+                               help="Search radius in metres")
     return vars(parser.parse_args())
 
 
@@ -318,6 +351,14 @@ def cli_main() -> None:
         _cmd_query(client, args)
     elif command == "sync":
         _cmd_sync(client, args)
+    elif command == "observe":
+        _cmd_observe(client, args)
+    elif command == "map":
+        _cmd_map(client)
+    elif command == "locate":
+        _cmd_locate(client, args)
+    elif command == "nearby":
+        _cmd_nearby(client, args)
 
 
 # -- subcommand implementations ------------------------------------------------
@@ -401,6 +442,76 @@ def _cmd_sync(client: ShugonetClient, args: Dict[str, Any]) -> None:
         client.disconnect()
 
 
+# -- spatial subcommands ---------------------------------------------------
+
+
+def _cmd_observe(client: ShugonetClient, args: Dict[str, Any]) -> None:
+    """One-shot spatial observation."""
+    entity_id = args["entity_id"]
+    x = args["x"]
+    y = args["y"]
+    z = args["z"]
+    confidence = args.get("confidence", 1.0)
+    label = args.get("label", "")
+    frame_id = args.get("frame_id", "world")
+    if not client.connect():
+        logger.error("failed to connect")
+        sys.exit(1)
+    try:
+        result = client._runtime.publish_observation(
+            entity_id, x, y, z,
+            confidence=confidence, label=label, frame_id=frame_id)
+        print(json.dumps(result, indent=2, sort_keys=True))
+    finally:
+        client.disconnect()
+
+
+def _cmd_map(client: ShugonetClient) -> None:
+    """Show the fleet's consolidated spatial map."""
+    if not client.connect():
+        logger.error("failed to connect")
+        sys.exit(1)
+    try:
+        fleet_map = client._runtime.get_fleet_map()
+        print(json.dumps(fleet_map, indent=2, sort_keys=True))
+    finally:
+        client.disconnect()
+
+
+def _cmd_locate(client: ShugonetClient, args: Dict[str, Any]) -> None:
+    """Show one agent's position."""
+    agent_id = args["agent_id"]
+    if not client.connect():
+        logger.error("failed to connect")
+        sys.exit(1)
+    try:
+        pos = client._runtime.spatial_sync.get_agent_position(agent_id)
+        if pos:
+            print(json.dumps(pos.to_dict(), indent=2, sort_keys=True))
+        else:
+            print(json.dumps({"agent_id": agent_id, "position": None},
+                             indent=2, sort_keys=True))
+    finally:
+        client.disconnect()
+
+
+def _cmd_nearby(client: ShugonetClient, args: Dict[str, Any]) -> None:
+    """Query spatial observations near a point."""
+    x = args["x"]
+    y = args["y"]
+    z = args["z"]
+    radius = args["radius"]
+    if not client.connect():
+        logger.error("failed to connect")
+        sys.exit(1)
+    try:
+        results = client._runtime.query_nearby(x, y, z, radius)
+        if results:
+            print(json.dumps(results, indent=2, sort_keys=True))
+        else:
+            print(json.dumps([], indent=2, sort_keys=True))
+    finally:
+        client.disconnect()
 # ---------------------------------------------------------------------------
 # Standalone entry
 # ---------------------------------------------------------------------------

@@ -38,6 +38,8 @@ from memory_sync import InMemoryFactStore, MemorySyncNode
 from mesh_query import MeshQuery
 from protocol import Envelope, ProtocolError, decode, encode, new_msg_id
 from relay_server import RelayHub, run_relay
+from spatial import SpatialIndex
+from spatial_sync import SpatialMemoryNode
 from tcp_transport import TCPTransport
 from transport_fallback import TransportChain
 
@@ -112,6 +114,8 @@ class ShugonetHost:
         self.relay = None
         self.chain: Optional[Any] = None
         self.mesh: Optional[MeshQuery] = None
+        self.spatial = SpatialIndex()
+        self.spatial_sync: Optional[SpatialMemoryNode] = None
         # Operator plane: the fleet dashboard (stdlib HTTP + SSE + compiled SPA).
         self.dashboard_port = max(0, int(dashboard_port))
         self.dashboard_bind = str(dashboard_bind or "127.0.0.1")
@@ -152,6 +156,9 @@ class ShugonetHost:
         # The host is a mesh participant: it stores every fleet fact (seed)
         # and answers memory queries against its own Tier-2 store.
         self.mesh = MeshQuery(self.agent_id, self.chain, self.store)
+        self.spatial_sync = SpatialMemoryNode(
+            self.agent_id, self.chain, self.spatial)
+        self.chain.subscribe(self._on_spatial_envelope)
         self.tcp.start()
         self.relay.start()
         self._running = True
@@ -288,6 +295,24 @@ class ShugonetHost:
         if env.msg_type == "heartbeat":
             self.registry.heartbeat(env.sender)
 
+    def _on_spatial_envelope(self, env: Any, via: str) -> None:
+        """Spatial envelope handler: extract agent positions from heartbeats
+        and feed them into the spatial index."""
+        if env.msg_type == "heartbeat":
+            position = env.payload.get("position")
+            if isinstance(position, dict):
+                self.spatial.insert_dict({
+                    "entity_id": env.sender,
+                    "agent_id": env.sender,
+                    "x": float(position.get("x", 0.0)),
+                    "y": float(position.get("y", 0.0)),
+                    "z": float(position.get("z", 0.0)),
+                    "confidence": float(position.get("confidence", 0.5)),
+                    "timestamp": env.payload.get("ts", __import__("time").time()),
+                    "frame_id": str(position.get("frame", "world")),
+                    "label": "agent",
+                })
+
     def _on_peer_connection_lost(self, agent_id: str) -> None:
         """Callback from TCPTransport when a paired agent's connection drops."""
         if self.registry.is_paired(agent_id):
@@ -343,6 +368,8 @@ class ShugonetHost:
             "chain_health": self.chain.health(),
             "mesh": self.mesh.stats(),
             "store_count": self.store.count(),
+            "spatial": self.spatial.stats(),
+            "spatial_observations": len(self.spatial.all_observations()),
             "audit_len": len(self.audit),
             "audit_tail": self.audit.tail,
         }
