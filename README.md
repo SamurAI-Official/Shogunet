@@ -6,7 +6,7 @@
 > networks.
 
 [![PyPI](https://img.shields.io/pypi/v/shugonet)](https://pypi.org/project/shugonet/)
-![Release](https://img.shields.io/badge/release-v0.5.1-blue)
+![Release](https://img.shields.io/badge/release-v0.5.2-blue)
 ![Python](https://img.shields.io/badge/python-3.9%E2%80%933.12-blue)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Android%20%28Termux%2FChaquopy%29-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -322,6 +322,20 @@ convergence, peer-lost latching, and unpaired-agent refusal.
 - **New protocol messages**: ``spatial_observation``, ``spatial_query``,
   ``spatial_response``, ``spatial_merge``, ``coordinate_frame``.
 - Version bumped 0.4.0 → 0.5.0.
+
+### 0.5.2
+
+- **Hardening**: fixed truncated ``effective_confidence`` decay math, removed
+  orphaned duplicate code paths, deduplicated ``status()`` in the runtime.
+- **Observation dedup**: ``SpatialIndex.insert`` now skips identical payloads
+  (content-based key) so re-delivery via broadcast + merge cannot inflate the
+  index; surfaced as ``duplicates_skipped`` in ``stats()``.
+- **Client API**: spatial CLI commands now use public ``ShugonetClient``
+  methods instead of runtime internals.
+- **42 new tests**: ``tests/test_spatial.py`` (27) and
+  ``tests/test_spatial_sync.py`` (15) covering the octree index, fusion,
+  cross-agent sync, dedup and the new protocol types. Suite now 301 tests.
+- Version bumped 0.5.1 → 0.5.2.
 
 ### 0.5.1
 
