@@ -19,14 +19,16 @@ Key concepts
   transforms when agents share them via ``coordinate_frame`` messages.
 """
 
+import logging
 import math
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from security import sanitize_text
 
-logger = __import__("logging").getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -107,6 +109,7 @@ class SpatialObservation:
         if a <= decay_s:
             return self.confidence
         factor = max(0.0, 1.0 - (a - decay_s) / decay_s)
+        return self.confidence * factor
 # ---------------------------------------------------------------------------
 # Octree spatial index
 # ---------------------------------------------------------------------------
@@ -203,6 +206,8 @@ class _OctreeNode:
         if self.children:
             for child in self.children:
                 child.collect_all(out)
+
+
 class SpatialIndex:
     """Octree-backed 3D spatial index for multi-agent observation fusion.
 
@@ -218,14 +223,28 @@ class SpatialIndex:
         self._max_per_leaf = max(1, int(max_per_leaf))
         self._decay_s = max(0.1, float(decay_s))
         self._transforms: Dict[str, FrameTransform] = {}
-        self._lock = __import__("threading").RLock()
+        self._lock = threading.RLock()
+        self._seen: set = set()   # (entity_id, agent_id, timestamp) dedup keys
         self._stats = {"inserts": 0, "queries": 0, "fusions": 0,
-                       "removed_expired": 0}
+                       "removed_expired": 0, "duplicates_skipped": 0}
 
     # -- insert ---------------------------------------------------------------
 
+    def _dedup_key(self, obs: SpatialObservation):
+        """Content-based identity: identical payloads dedup, distinct
+        observations (even same-entity, same-millisecond) never collide."""
+        return (obs.entity_id, obs.agent_id,
+                round(obs.x, 6), round(obs.y, 6), round(obs.z, 6),
+                round(obs.confidence, 6), round(obs.timestamp, 6),
+                obs.frame_id, obs.label)
+
     def insert(self, obs: SpatialObservation) -> None:
+        key = self._dedup_key(obs)
         with self._lock:
+            if key in self._seen:
+                self._stats["duplicates_skipped"] += 1
+                return
+            self._seen.add(key)
             self._root.insert(obs, max_depth=self._max_depth,
                               max_per_leaf=self._max_per_leaf)
             self._stats["inserts"] += 1
@@ -353,6 +372,7 @@ class SpatialIndex:
 
     def _rebuild(self, obs: List[SpatialObservation]) -> None:
         self._root = _OctreeNode(0.0, 0.0, 0.0, self._root.half)
+        self._seen = {self._dedup_key(o) for o in obs}
         for o in obs:
             self._root.insert(o, max_depth=self._max_depth,
                               max_per_leaf=self._max_per_leaf)
@@ -389,31 +409,6 @@ class SpatialIndex:
     def stats(self) -> Dict[str, int]:
         with self._lock:
             return dict(self._stats)
-        return [o for o in self._all() if o.timestamp >= since]
-
-    def all_observations(self) -> List[SpatialObservation]:
-        return self._all()
-
-    def agent_positions(self, now=None) -> Dict[str, SpatialObservation]:
-        by_agent: Dict[str, List[SpatialObservation]] = {}
-        for o in self._all():
-            by_agent.setdefault(o.agent_id, []).append(o)
-        result = {}
-        for aid, entries in by_agent.items():
-            entries.sort(key=lambda e: e.timestamp, reverse=True)
-            result[aid] = entries[0]
-        return result
-
-    def entity_positions(self, now=None) -> Dict[str, SpatialObservation]:
-        by_entity: Dict[str, List[SpatialObservation]] = {}
-        for o in self._all():
-            by_entity.setdefault(o.entity_id, []).append(o)
-        result = {}
-        for eid, entries in by_entity.items():
-            entries.sort(key=lambda e: e.timestamp, reverse=True)
-            result[eid] = self._fuse(entries, now)
-        return result
-        return self.confidence * factor
 
 
 @dataclass

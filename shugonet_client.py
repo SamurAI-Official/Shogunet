@@ -209,6 +209,40 @@ class ShugonetClient:
             self.disconnect()
             return
 
+    # -- spatial awareness ---------------------------------------------------
+
+    def publish_observation(
+        self, entity_id: str, x: float, y: float, z: float,
+        confidence: float = 1.0, label: str = "", frame_id: str = "world",
+    ) -> Dict[str, Any]:
+        """Publish a spatial observation to the fleet."""
+        if self._runtime is None:
+            return {"status": "refused", "reason": "not connected"}
+        return self._runtime.publish_observation(
+            entity_id, x, y, z,
+            confidence=confidence, label=label, frame_id=frame_id,
+        )
+
+    def get_fleet_map(self) -> Dict[str, Any]:
+        """Return the consolidated spatial view of the fleet."""
+        if self._runtime is None:
+            return {}
+        return self._runtime.get_fleet_map()
+
+    def locate_agent(self, agent_id: str) -> Optional[Dict[str, Any]]:
+        """Return the latest position of an agent."""
+        if self._runtime is None or self._runtime.spatial_sync is None:
+            return None
+        pos = self._runtime.spatial_sync.get_agent_position(agent_id)
+        return pos.to_dict() if pos else None
+
+    def query_nearby(self, x: float, y: float, z: float,
+                     radius: float) -> List[Dict[str, Any]]:
+        """Query spatial observations near a point."""
+        if self._runtime is None:
+            return []
+        return self._runtime.query_nearby(x, y, z, radius)
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -458,7 +492,7 @@ def _cmd_observe(client: ShugonetClient, args: Dict[str, Any]) -> None:
         logger.error("failed to connect")
         sys.exit(1)
     try:
-        result = client._runtime.publish_observation(
+        result = client.publish_observation(
             entity_id, x, y, z,
             confidence=confidence, label=label, frame_id=frame_id)
         print(json.dumps(result, indent=2, sort_keys=True))
@@ -472,7 +506,7 @@ def _cmd_map(client: ShugonetClient) -> None:
         logger.error("failed to connect")
         sys.exit(1)
     try:
-        fleet_map = client._runtime.get_fleet_map()
+        fleet_map = client.get_fleet_map()
         print(json.dumps(fleet_map, indent=2, sort_keys=True))
     finally:
         client.disconnect()
@@ -485,9 +519,9 @@ def _cmd_locate(client: ShugonetClient, args: Dict[str, Any]) -> None:
         logger.error("failed to connect")
         sys.exit(1)
     try:
-        pos = client._runtime.spatial_sync.get_agent_position(agent_id)
+        pos = client.locate_agent(agent_id)
         if pos:
-            print(json.dumps(pos.to_dict(), indent=2, sort_keys=True))
+            print(json.dumps(pos, indent=2, sort_keys=True))
         else:
             print(json.dumps({"agent_id": agent_id, "position": None},
                              indent=2, sort_keys=True))
@@ -505,7 +539,7 @@ def _cmd_nearby(client: ShugonetClient, args: Dict[str, Any]) -> None:
         logger.error("failed to connect")
         sys.exit(1)
     try:
-        results = client._runtime.query_nearby(x, y, z, radius)
+        results = client.query_nearby(x, y, z, radius)
         if results:
             print(json.dumps(results, indent=2, sort_keys=True))
         else:
@@ -518,13 +552,3 @@ def _cmd_nearby(client: ShugonetClient, args: Dict[str, Any]) -> None:
 
 if __name__ == "__main__":
     cli_main()
-
-    def disconnect(self) -> None:
-        """Disconnect from the host and stop background threads."""
-        if self._runtime is not None:
-            try:
-                self._runtime.stop()
-            except Exception as exc:
-                logger.warning("disconnect: %s", exc)
-        self._runtime = None
-        self._connected = False

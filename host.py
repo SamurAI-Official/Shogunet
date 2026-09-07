@@ -308,7 +308,7 @@ class ShugonetHost:
                     "y": float(position.get("y", 0.0)),
                     "z": float(position.get("z", 0.0)),
                     "confidence": float(position.get("confidence", 0.5)),
-                    "timestamp": env.payload.get("ts", __import__("time").time()),
+                    "timestamp": env.payload.get("ts", time.time()),
                     "frame_id": str(position.get("frame", "world")),
                     "label": "agent",
                 })

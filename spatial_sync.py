@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_QUERY_TIMEOUT_S = 2.0
 MAX_SPATIAL_RESULTS = 128
 MERGE_INTERVAL_S = 30.0
+MAX_OBS_PER_MERGE = 256
+
+
 class SpatialMemoryNode:
     """Attaches a spatial awareness layer to a TransportChain."""
 
@@ -254,14 +257,10 @@ class SpatialMemoryNode:
         self.index.add_transform(t)
 
     def maybe_merge(self, interval_s=30.0):
-        if __import__("time").time() - self._last_merge_ts >= interval_s:
+        if _time.time() - self._last_merge_ts >= interval_s:
             return self.send_merge()
         return False
 
     def stats(self):
         with self._lock:
             return dict(self._stats)
-            self._stats["merges_sent"] += 1
-            self._last_merge_ts = now
-        return ok
-MAX_OBS_PER_MERGE = 256

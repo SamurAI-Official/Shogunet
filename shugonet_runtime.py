@@ -232,19 +232,3 @@ class ShugonetAgentRuntime:
             return []
         return [o.to_dict() for o
                 in self.spatial_sync.query_nearby(x, y, z, radius)]
-
-    def status(self):
-        with self._lock:
-            stats = dict(self._stats)
-        return {
-            "agent_id": self.agent_id,
-            "shugonet_version": version.VERSION,
-            "running": self._running,
-            "realm": self.realm,
-            "stats": stats,
-            "store_count": self.store.count(),
-            "outbox_pending": len(self.outbox),
-            "chain": self.chain.stats() if self.chain else {},
-            "spatial_observations": self.spatial.stats().get("inserts", 0),
-            "own_position": self._own_position,
-        }
