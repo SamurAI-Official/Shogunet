@@ -6,7 +6,7 @@
 > networks.
 
 [![PyPI](https://img.shields.io/pypi/v/shugonet)](https://pypi.org/project/shugonet/)
-![Release](https://img.shields.io/badge/release-v0.5.0-blue)
+![Release](https://img.shields.io/badge/release-v0.5.1-blue)
 ![Python](https://img.shields.io/badge/python-3.9%E2%80%933.12-blue)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Android%20%28Termux%2FChaquopy%29-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -322,6 +322,21 @@ convergence, peer-lost latching, and unpaired-agent refusal.
 - **New protocol messages**: ``spatial_observation``, ``spatial_query``,
   ``spatial_response``, ``spatial_merge``, ``coordinate_frame``.
 - Version bumped 0.4.0 → 0.5.0.
+
+### 0.5.1
+
+- **3D spatial awareness**: ``spatial.py`` (octree SpatialIndex with
+  sphere/AABB queries and confidence-weighted fusion), ``spatial_sync.py``
+  (SpatialMemoryNode for cross-agent observation sharing). Agent positions
+  ride piggyback on heartbeats.
+- **New protocol messages**: ``spatial_observation`` (14), ``spatial_query``
+  (15), ``spatial_response`` (16), ``spatial_merge`` (17),
+  ``coordinate_frame`` (18).
+- **Extended CLI**: ``shugonet-client observe``, ``map``, ``locate``,
+  ``nearby`` subcommands for spatial awareness.
+- **Host/runtime integration**: ShugonetHost maintains fleet-wide spatial
+  index; ShugonetAgentRuntime enriches heartbeats with position data.
+- Version bumped 0.5.0 → 0.5.1.
 
 ### 0.4.0
 
