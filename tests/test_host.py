@@ -14,7 +14,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from host import ShugonetHost
-from agent_runtime import ShugonetAgentRuntime
+from shugonet_runtime import ShugonetAgentRuntime
 
 
 class TestHostIntegration(unittest.TestCase):

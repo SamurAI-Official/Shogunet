@@ -2,10 +2,11 @@
 ShugoCore-side adapter (drop-in, following the mobile-handler pattern)
 =====================================================================
 
-Copy this module into a ShugoCore checkout as ``shugonet_bridge.py`` (or
-import it from the Shogunet checkout via ``SHUGOCORE_PATH``) to let a
-ShugoCore ``DecisionEngine`` drive the Shogunet network stack exactly the
-way it already drives the robotics and mobile handlers:
+Compatible with ShugoCore v1.20.0+. Copy this module into a ShugoCore
+checkout as ``shugonet_bridge.py`` (or import it from the Shogunet checkout
+via ``SHUGOCORE_PATH``) to let a ShugoCore ``DecisionEngine`` drive the
+Shogunet network stack exactly the way it already drives the robotics and
+mobile handlers:
 
 1. ``ShugonetExecutionHandler`` mirrors ``MobileExecutionHandler``: a
    ``handle(decision)`` entry that dispatches on ``action_type`` against a

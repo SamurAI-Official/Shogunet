@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import version
 from host import ShugonetHost
-from agent_runtime import ShugonetAgentRuntime
+from shugonet_runtime import ShugonetAgentRuntime
 from protocol import Envelope, encode, new_msg_id
 from tcp_transport import TCPTransport
 from transport_fallback import TransportChain
@@ -47,16 +47,17 @@ class TestCompatRule(unittest.TestCase):
 
     def test_same_minor_is_compatible(self):
         self.assertTrue(version.is_compatible(version.VERSION))
-        self.assertTrue(version.is_compatible("0.4.9"))
+        self.assertTrue(version.is_compatible("0.5.9"))
 
     def test_older_minor_refused(self):
+        self.assertFalse(version.is_compatible("0.4.9"))
         self.assertFalse(version.is_compatible("0.3.9"))
         self.assertFalse(version.is_compatible("0.1.0"))
 
     def test_newer_minor_refused(self):
-        # The host is the compatibility floor: a 0.5 client speaks a wire
-        # dialect the 0.4 host has never seen.
-        self.assertFalse(version.is_compatible("0.5.0"))
+        # The host is the compatibility floor: a 0.6 client speaks a wire
+        # dialect the 0.5 host has never seen.
+        self.assertFalse(version.is_compatible("0.6.0"))
 
     def test_garbage_refused(self):
         self.assertFalse(version.is_compatible(""))

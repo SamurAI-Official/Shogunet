@@ -6,7 +6,7 @@
 > networks.
 
 [![PyPI](https://img.shields.io/pypi/v/shugonet)](https://pypi.org/project/shugonet/)
-![Release](https://img.shields.io/badge/release-v0.4.0-blue)
+![Release](https://img.shields.io/badge/release-v0.5.0-blue)
 ![Python](https://img.shields.io/badge/python-3.9%E2%80%933.12-blue)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Android%20%28Termux%2FChaquopy%29-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -128,7 +128,7 @@ python3 host.py --tcp-port 9000 --relay-port 9001
 ### Join from a ShugoCore process
 
 ```python
-from agent_runtime import ShugonetAgentRuntime
+from shugonet_runtime import ShugonetAgentRuntime
 
 runtime = ShugonetAgentRuntime(
     agent_id="agent-001",
@@ -150,6 +150,53 @@ runtime.sync()
 
 # Leave the fleet
 runtime.stop()
+```
+
+### Cross-platform CLI client
+
+Shogunet ships a standard CLI client that works on macOS, Linux, and Windows:
+
+```bash
+# Install (ships with the wheel)
+pip install shugonet
+
+# Connect and stay connected (foreground daemon)
+shugonet-client run
+
+# One-shot status
+shugonet-client status
+
+# One-shot send to a peer
+shugonet-client send agent-002 /shugunet/agent-001/task '{"action":"scan"}'
+
+# One-shot memory query
+shugonet-client query "obstacle in zone north"
+
+# One-shot digest sync
+shugonet-client sync agent-002
+```
+
+The client is configured via environment variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `SHUGONET_AGENT_ID` | hostname | Agent identifier |
+| `SHUGONET_HOST` | 127.0.0.1 | ShugonetHost address |
+| `SHUGONET_TCP_PORT` | 9000 | TCP port |
+| `SHUGONET_RELAY_URL` | *(none)* | Relay hub URL |
+| `SHUGONET_REALM` | phys | sim or phys realm |
+| `SHUGONET_LOG_LEVEL` | info | Log verbosity |
+
+Or use it programmatically:
+
+```python
+from shugonet_client import ShugonetClient
+
+client = ShugonetClient(agent_id="robot-1", host="10.0.0.5", tcp_port=9000)
+client.connect()
+client.send("robot-2", "/shugunet/robot-1/status", {"battery": 87})
+print(client.status())
+client.disconnect()
 ```
 
 ### Routing model
@@ -202,7 +249,8 @@ cd dashboard && npm ci && npm run build
 | Module | Responsibility |
 |---|---|
 | `host.py` | `ShugunetHost`: admit paired agents, route traffic, seed the mesh |
-| `agent_runtime.py` | `ShugonetAgentRuntime`: client half a ShugoCore process instantiates |
+| `shugonet_runtime.py` | `ShugonetAgentRuntime`: client half a ShugoCore process instantiates |
+| `shugonet_client.py`  | `ShugonetClient`: cross-platform CLI and programmatic client |
 | `dashboard.py` | `DashboardServer`: stdlib HTTP operator plane (REST + SSE + SPA) |
 | `pg_store.py` | `PgFactStore`: optional PostgreSQL mesh backend (ShugoCore `PgSemanticMemory` parity) |
 
@@ -220,6 +268,20 @@ integration suite spins up a real `ShugonetHost` with multiple threaded
 convergence, peer-lost latching, and unpaired-agent refusal.
 
 ## Changelog
+
+### 0.5.0
+
+- **ShugoCore 1.20.0 compatibility**: renamed ``agent_runtime.py`` to
+  ``shugonet_runtime.py`` to avoid naming collision with ShugoCore's own
+  ``agent_runtime`` module. All imports updated accordingly.
+- **Cross-platform CLI client**: ``shugonet-client`` command (installed by
+  ``pip``) with ``run``, ``status``, ``send``, ``query``, and ``sync``
+  subcommands. Configured via ``SHUGONET_*`` environment variables. Works
+  on macOS, Linux, and Windows.
+- **Standard programmatic client**: ``shugonet_client.ShugonetClient`` wraps
+  the full runtime in a simple ``connect()`` / ``send()`` / ``disconnect()``
+  interface.
+- Version bumped 0.4.0 → 0.5.0.
 
 ### 0.4.0
 

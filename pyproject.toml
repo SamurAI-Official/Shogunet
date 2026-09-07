@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "shugonet"
-version = "0.4.0"
+version = "0.5.0"
 description = "Networking integration for connecting multiple Shugocore agents together for collaboration between Shugocore agents in simulation and physical spaces, designed to be used over 5G, 4G, EDGE, LoRa, Wifi-Halow, Wifi, and Bluetooth networks."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -22,12 +22,16 @@ ble = ["bleak>=0.20"]               # BLE transport where AF_BLUETOOTH is absent
 telemetry = ["opentelemetry-api>=1.20"]
 postgres = ["psycopg2-binary>=2.9"] # optional PgSemanticMemory-mirroring backend for the mesh
 
+[project.scripts]
+shugonet-client = "shugonet_client:cli_main"
+
 [tool.setuptools]
 py-modules = ["agent_registry", "audit", "bluetooth_transport", "dashboard",
               "discovery", "fallbacks", "link_simulator", "lora_transport",
               "memory_sync", "mesh_query", "pg_store", "policy", "protocol",
               "relay_server", "relay_transport", "security", "shugocore_adapter",
-              "shugocore_bridge", "store_forward", "tcp_transport",
-              "telemetry", "transports", "transport_fallback", "version"]
+              "shugocore_bridge", "shugonet_client", "shugonet_runtime",
+              "store_forward", "tcp_transport", "telemetry", "transports",
+              "transport_fallback", "version"]
 packages = ["shugonet_web"]
 package-data = { shugonet_web = ["static/**/*"] }
