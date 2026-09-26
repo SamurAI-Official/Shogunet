@@ -13,6 +13,7 @@ from protocol import Envelope, new_msg_id
 from relay_transport import RelayTransport
 from spatial import SpatialIndex
 from spatial_sync import SpatialMemoryNode
+from nrr_adapter import NRRMeshAdapter
 from store_forward import OutboxStore
 from tcp_transport import TCPTransport
 from transport_fallback import TransportChain
@@ -24,7 +25,7 @@ class ShugonetAgentRuntime:
     def __init__(self, agent_id, host_tcp_host="127.0.0.1", host_tcp_port=0,
                  host_agent_id=None, host_relay_url=None, realm="phys",
                  manifest=None, store=None, audit=None, outbox_path=None,
-                 on_message=None):
+                 on_message=None, registry=None, nrr_worker=None):
         self.agent_id = agent_id
         self.host_tcp_host = host_tcp_host
         self.host_tcp_port = int(host_tcp_port)
@@ -36,6 +37,18 @@ class ShugonetAgentRuntime:
         # Version handshake for the relay path: the host surfaces this from
         # the join manifest (TCP peers report via the announce frame instead).
         self.manifest.setdefault("shugonet_version", version.VERSION)
+        self.registry = registry
+        self.nrr_worker = nrr_worker
+        # Advertise compute capabilities so the fleet can route NRR work here.
+        if nrr_worker is not None:
+            caps = dict(self.manifest.get("compute_caps") or {})
+            workloads = list(caps.get("workloads") or [])
+            if "nrr_render" not in workloads:
+                workloads.append("nrr_render")
+            caps["workloads"] = workloads
+            caps.setdefault("backend", getattr(nrr_worker, "backend", "cpu"))
+            self.manifest["compute_caps"] = caps
+        self.nrr = None
         self.store = store or InMemoryFactStore(agent_id)
         self.audit = audit
         self.on_message = on_message
@@ -80,6 +93,10 @@ class ShugonetAgentRuntime:
         self.mesh = MeshQuery(self.agent_id, self.chain, self.store)
         self.spatial_sync = SpatialMemoryNode(
             self.agent_id, self.chain, self.spatial)
+        self.nrr = NRRMeshAdapter(
+            self.agent_id, self.chain, registry=self.registry,
+            worker=self.nrr_worker, spatial_sync=self.spatial_sync,
+            audit=self.audit)
         self._running = True
         self._stop.clear()
         self._loop_thread = threading.Thread(
@@ -101,6 +118,7 @@ class ShugonetAgentRuntime:
         self.chain = None
         self.mesh = None
         self.sync_node = None
+        self.nrr = None
 
     def _loop(self):
         last_heartbeat = 0.0
@@ -232,3 +250,38 @@ class ShugonetAgentRuntime:
             return []
         return [o.to_dict() for o
                 in self.spatial_sync.query_nearby(x, y, z, radius)]
+
+    # -- NRR perception / neural rendering -----------------------------------
+
+    def render_frame(self, peer, descriptor, qos="best_effort"):
+        """Ask a capable peer to neural-render one frame (descriptors only)."""
+        if self.nrr is None:
+            return {"status": "refused", "reason": "not connected"}
+        return self.nrr.dispatch_render(peer, descriptor, qos=qos)
+
+    def query_scene(self, peer, motion_request, qos="best_effort"):
+        """Ask a capable peer to fuse sensors into a scene around a motion."""
+        if self.nrr is None:
+            return {"status": "refused", "reason": "not connected"}
+        return self.nrr.dispatch_scene_request(peer, motion_request, qos=qos)
+
+    def publish_motion_event(self, event, qos="best_effort"):
+        """Broadcast a local NRR motion/change event (no pixel payload)."""
+        if self.nrr is None:
+            return {"status": "refused", "reason": "not connected"}
+        return self.nrr.publish_motion_event(event, qos=qos)
+
+    def nrr_capable_nodes(self):
+        """Peers currently advertising the ``nrr_render`` workload."""
+        if self.registry is None:
+            return []
+        return self.registry.nodes_for_workload("nrr_render")
+
+    def nrr_status(self):
+        """Local NRR serving/awaiting state (never any pixel bytes)."""
+        return {
+            "worker": bool(self.nrr_worker is not None),
+            "backend": getattr(self.nrr_worker, "backend", None),
+            "available": bool(getattr(self.nrr_worker, "available", False)),
+            "compute_caps": self.manifest.get("compute_caps", {}),
+        }

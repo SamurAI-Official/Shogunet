@@ -101,6 +101,11 @@ MESSAGE_TYPES = {
     "spatial_response": 16,
     "spatial_merge": 17,
     "coordinate_frame": 18,
+    "nrr_render_request": 19,
+    "nrr_render_result": 20,
+    "nrr_scene_request": 21,
+    "nrr_scene_result": 22,
+    "nrr_motion_event": 23,
 }
 TYPE_NAMES = {v: k for k, v in MESSAGE_TYPES.items()}
 
@@ -125,6 +130,11 @@ TYPE_CLASS = {
     "spatial_response": CLASS_MEMORY,
     "spatial_merge": CLASS_BULK,
     "coordinate_frame": CLASS_CONTROL,
+    "nrr_render_request": CLASS_TASK,
+    "nrr_render_result": CLASS_TASK,
+    "nrr_scene_request": CLASS_TASK,
+    "nrr_scene_result": CLASS_TASK,
+    "nrr_motion_event": CLASS_MEMORY,
 }
 
 # Payload field registry for the compact codec. Field 0 ("_blob") is the
@@ -136,7 +146,8 @@ FIELD_NAMES = {
     "error": 15, "manifest": 16, "count": 17, "since": 18, "grants": 19,
     "reason": 20, "ttl": 21, "qos": 22, "realm": 23, "port": 24,
     "entity_id": 25, "frame_id": 26, "confidence": 27, "orientation": 28,
-    "size": 29, "observations": 30,
+    "size": 29, "observations": 30, "descriptor": 31, "result": 32,
+    "request_id": 33, "event": 34, "entities": 35, "motion_events": 36,
 }
 FIELD_IDS = {v: k for k, v in FIELD_NAMES.items()}
 

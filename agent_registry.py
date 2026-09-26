@@ -27,6 +27,48 @@ from security import sanitize_text
 DEFAULT_PAIRING_TTL_HOURS = 12.0
 HEARTBEAT_TIMEOUT_S = 30.0
 
+# Compute capability constants matching ShugoCore's mobile_nodes contract
+COMPUTE_CAPS_KEY = "compute_caps"
+KNOWN_WORKLOADS = ("nrr_render", "vision")
+KNOWN_CAP_KEYS = ("fp16", "int8", "vram_mb", "workloads")
+
+
+def sanitize_compute_caps(manifest: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract and bound the compute-capability block from a manifest."""
+    caps = manifest.get(COMPUTE_CAPS_KEY)
+    if not isinstance(caps, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    fp16 = caps.get("fp16")
+    if isinstance(fp16, bool):
+        out["fp16"] = fp16
+    int8 = caps.get("int8")
+    if isinstance(int8, bool):
+        out["int8"] = int8
+    vram = caps.get("vram_mb")
+    if isinstance(vram, (int, float)) and 0 < vram < 1e6:
+        out["vram_mb"] = int(vram)
+    workloads = caps.get("workloads")
+    if isinstance(workloads, (list, tuple)):
+        clean = []
+        for w in list(workloads)[:8]:
+            name = sanitize_text(str(w), 32)
+            if name in KNOWN_WORKLOADS:
+                clean.append(name)
+        if clean:
+            out["workloads"] = clean
+    return out
+
+
+def node_supports_workload(manifest: Dict[str, Any], workload: str) -> bool:
+    """True when manifest's compute_caps advertise workload."""
+    caps = manifest.get(COMPUTE_CAPS_KEY)
+    if not isinstance(caps, dict):
+        return False
+    workloads = caps.get("workloads")
+    return (isinstance(workloads, list)
+            and sanitize_text(str(workload), 32) in workloads)
+
 
 def parse_shugonet_topic(topic: str) -> Optional[Tuple[str, str]]:
     """Split ``/shugunet/{agent_id}/{tail}``; None outside the namespace or
@@ -65,6 +107,9 @@ class AgentRegistry:
         if isinstance(manifest, dict):
             realm = sanitize_text(manifest.get("realm", "phys"), 8) or "phys"
             clean_manifest = dict(manifest)
+            caps = sanitize_compute_caps(clean_manifest)
+            if caps:
+                clean_manifest[COMPUTE_CAPS_KEY] = caps
         entry = {
             "agent_id": agent,
             "manifest": clean_manifest,
@@ -145,6 +190,14 @@ class AgentRegistry:
         with self._lock:
             entry = self._paired.get(str(agent_id))
         return entry["realm"] if entry else None
+
+    def nodes_for_workload(self, workload: str) -> List[Dict[str, Any]]:
+        """Return all currently alive paired nodes advertising a compute workload."""
+        target = sanitize_text(str(workload), 32)
+        with self._lock:
+            active = self.list_agents()
+        return [entry for entry in active
+                if entry.get("alive") and node_supports_workload(entry.get("manifest", {}), target)]
 
     # -- topic ACL ------------------------------------------------------------
 
