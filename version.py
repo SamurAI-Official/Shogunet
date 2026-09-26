@@ -1,6 +1,6 @@
 """Shogunet version (SemVer)."""
 
-__version__ = "0.5.2"
+__version__ = "0.5.3"
 VERSION = __version__
 
 # Wire-format version of the frame protocol (mirrors protocol.PROTOCOL_VERSION;

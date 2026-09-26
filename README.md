@@ -6,7 +6,7 @@
 > networks.
 
 [![PyPI](https://img.shields.io/pypi/v/shugonet)](https://pypi.org/project/shugonet/)
-![Release](https://img.shields.io/badge/release-v0.5.2-blue)
+![Release](https://img.shields.io/badge/release-v0.5.3-blue)
 ![Python](https://img.shields.io/badge/python-3.9%E2%80%933.12-blue)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Android%20%28Termux%2FChaquopy%29-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -98,7 +98,8 @@ shipping → broadband only, deferred under low power / thermal pressure.
 | `store_forward.py` | Bounded JSONL WAL outbox/inbox with replay + dedup |
 | `memory_sync.py` / `mesh_query.py` | Codependent memory mesh: fact replication, conflict resolution, fan-out queries |
 | `audit.py`, `fallbacks.py`, `policy.py`, `telemetry.py` | ShugoCore-aligned safety surface |
-| `shugocore_bridge.py` | Adapter hosting a Shogunet node beside a ShugoCore `DecisionEngine` |
+| `shugocore_bridge.py` | Loads a real ShugoCore checkout's primitives (`sanitize_text` / `redact` / `validate_url` / `AuditChain` / Tier-2 `SemanticMemory`), with stdlib-first fallbacks |
+| `shugocore_adapter.py` | ShugoCore-side handler: registers the `network_*` action types on a `DecisionEngine` and merges the network fallback severities |
 
 ## Hosting a fleet
 
@@ -151,6 +152,61 @@ runtime.sync()
 # Leave the fleet
 runtime.stop()
 ```
+
+### Driving Shogunet from a ShugoCore `DecisionEngine`
+
+`shugocore_adapter.py` (vendored into a ShugoCore checkout as
+`shugonet_bridge.py`) exposes the Shogunet network stack as an ordinary
+execution-layer handler, so network actions clear the same consent/approval
+gate as the robotics and mobile handlers:
+
+```python
+from shugonet_bridge import (
+    attach_network_fallbacks,
+    register_network_handlers,
+)
+
+register_network_handlers(engine.execution_layer, runtime)
+attach_network_fallbacks(engine.fallback_controller)
+```
+
+Ten action types are registered — `network_send`, `network_query`,
+`network_sync`, `network_spatial_observe`, `network_nrr_render`,
+`network_nrr_scene` (side-effecting, consent-gated) and
+`network_list_agents`, `network_status`, `network_spatial_query`,
+`network_fleet_map` (read-only). The spatial/NRR actions require a runtime
+that implements `publish_observation` / `query_nearby` / `get_fleet_map` /
+`render_frame` / `query_scene`; against an older runtime they return
+`{"status": "refused"}` rather than failing.
+
+`register_network_handlers` patches **three** policy sets —
+`NETWORK_ACTION_TYPES`, `NETWORK_READ_ACTION_TYPES` and
+`KNOWN_ACTION_TYPES` — because `ExecutionLayer.register_handler` validates
+against the first two. It mutates them in place (consumers hold references to
+those objects) and registers each type independently, so one type the engine
+refuses never costs you the rest. It returns the types that registered; only
+a *total* failure raises, so `attach_network_fallbacks` still runs.
+
+### Using ShugoCore's primitives (optional)
+
+Point `SHUGOCORE_PATH` at a ShugoCore checkout to have Shogunet prefer
+ShugoCore's hardened `sanitize_text` / `redact` / `validate_url` and
+hash-chained `AuditChain` over its own equivalents:
+
+```python
+import shugocore_bridge
+
+shugocore_bridge.configure()          # reads $SHUGOCORE_PATH
+shugocore_bridge.shugocore_loaded()   # True only if the load is verified
+```
+
+Shogunet and ShugoCore both ship `security.py`, `audit.py` and `policy.py`,
+so the bridge loads ShugoCore's modules by explicit file path under private
+names and temporarily evicts the same-named entries from `sys.modules` (it
+restores them afterwards). `shugocore_loaded()` verifies each module's
+`__file__` really sits inside the checkout rather than trusting the import.
+Without a checkout every primitive degrades to the local stdlib-first
+equivalent and the mesh is unchanged.
 
 ### Cross-platform CLI client
 
@@ -302,7 +358,69 @@ integration suite spins up a real `ShugonetHost` with multiple threaded
 `ShugonetAgentRuntime` clients, validates cross-talk isolation, memory
 convergence, peer-lost latching, and unpaired-agent refusal.
 
+Most of the suite is hermetic. Three modules are not, and are skipped
+automatically when no ShugoCore checkout is present (`$SHUGOCORE_PATH`, or a
+sibling `../Shugocore`):
+
+| Test | What it covers |
+|---|---|
+| `tests/test_shugocore_integration.py` | Drives a **real** `ExecutionLayer` / `FallbackController` in a subprocess, with `sys.modules` deliberately shadowed, to prove registration and primitive delegation work end to end |
+| `tests/test_bridge_sync.py` | Keeps `shugocore_adapter.py` and the vendored `shugonet_bridge.py` from drifting apart |
+| `tests/test_memory_compat.py` | Fact-schema and embedding parity against a real `SemanticMemory` / `vector_db` |
+
+The ShugoCore integration test runs out-of-process on purpose: module shadowing
+and `sys.path` order are process-global, so an in-process test could not
+reproduce the failure mode it guards against.
+
 ## Changelog
+
+### 0.5.3
+
+ShugoCore 1.30 compatibility. The `network_*` action registration was broken
+against a real `DecisionEngine` and the failures were all silent.
+
+- **Fixed: `register_network_handlers` registered nothing.** It patched only
+  `policy.KNOWN_ACTION_TYPES`, but `ExecutionLayer.register_handler` validates
+  against `NETWORK_ACTION_TYPES` / `NETWORK_READ_ACTION_TYPES` and raises
+  `ValueError` for anything else. The adapter registers 10 types (5 more than
+  ShugoCore's `policy` knows), so the call aborted on the fifth and left the
+  engine with **zero** network handlers — and, because the documented
+  `attach_network_fallbacks` call came after it, with no fallback severities
+  either. Both sets are now patched, **in place**: `execution_layer` holds a
+  reference to those objects and re-reads them per call, so a rebind would
+  have left it validating a stale set forever.
+- **Fixed: registration is no longer all-or-nothing.** Each type is registered
+  independently; a refused type is logged and skipped. The function returns
+  the types that registered, and raises only on *total* failure.
+- **Fixed: the bridge never actually used ShugoCore's primitives.** Both repos
+  ship `security.py` / `audit.py` / `policy.py`, and a module already in
+  `sys.modules` wins over `sys.path` order — so `import security` returned
+  Shogunet's own module while `shugocore_loaded()` reported `True`. Modules
+  are now loaded by explicit file path under private names, with same-named
+  `sys.modules` entries temporarily evicted (and restored) so ShugoCore's
+  internal imports bind ShugoCore's copies. `shugocore_loaded()` now verifies
+  each module's `__file__` is inside the checkout.
+- **Fixed: `validate_url` silently fell back to the weak local check.**
+  ShugoCore ≥1.30 exposes `validate_url(url, hosts, schemes) -> (ok, reason)`;
+  the bridge still called the removed `allow_all=` keyword, and the resulting
+  `TypeError` was swallowed — leaving the host allowlist unenforced and
+  embedded URL credentials accepted. Both signatures are handled, the result is
+  always `bool`, and a validator error now **fails closed**. The local fallback
+  also rejects embedded credentials.
+- **Fixed: `register_network_handlers` could patch the wrong `policy` module**
+  when both trees are on `sys.path`; ShugoCore's is now resolved by file path.
+- **Tests**: new `tests/test_shugocore_integration.py` (10 tests) drives a real
+  `ExecutionLayer`/`FallbackController` in a subprocess with `sys.modules`
+  deliberately shadowed — the first test in the suite able to reproduce these
+  failures, since duck-typed doubles cannot raise `ValueError` or model
+  import shadowing. Plus 6 hermetic tests for the registration semantics.
+  Suite now 348 tests.
+- **Known gap**: ShugoCore's `ShugonetAgentRuntime` does not yet implement
+  `publish_observation` / `query_nearby` / `get_fleet_map` / `render_frame` /
+  `query_scene`, so the five spatial/NRR actions register but return
+  `{"status": "refused"}` at dispatch.
+- Version bumped 0.5.2 → 0.5.3 (patch only — no wire-format change, so the
+  0.5.x dialect peers keep interoperating).
 
 ### 0.5.0
 
