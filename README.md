@@ -423,6 +423,11 @@ against a real `DecisionEngine` and the failures were all silent.
   `publish_observation` / `query_nearby` / `get_fleet_map` / `render_frame` /
   `query_scene`, so the five spatial/NRR actions register but return
   `{"status": "refused"}` at dispatch.
+- **Known gap**: `host.py` is not in `py-modules`, so `pip install shugonet`
+  does not ship the fleet host even though the *Start a host* section above
+  shows `from host import ShugonetHost`. This predates 0.5.3 and is left as-is
+  (the host is normally run from a checkout via `python3 host.py`); the client
+  runtime, mesh and `shugonet-client` are unaffected. Tracked for a follow-up.
 - Version bumped 0.5.2 → 0.5.3 (patch only — no wire-format change, so the
   0.5.x dialect peers keep interoperating).
 
