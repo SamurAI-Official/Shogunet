@@ -28,7 +28,8 @@ shugonet-client = "shugonet_client:cli_main"
 [tool.setuptools]
 py-modules = ["agent_registry", "audit", "bluetooth_transport", "dashboard",
               "discovery", "fallbacks", "link_simulator", "lora_transport",
-              "memory_sync", "mesh_query", "pg_store", "policy", "protocol",
+              "memory_sync", "mesh_query", "nrr_adapter", "pg_store", "policy",
+              "protocol",
               "relay_server", "relay_transport", "security", "shugocore_adapter",
               "shugocore_bridge", "shugonet_client", "shugonet_runtime",
               "spatial", "spatial_sync",

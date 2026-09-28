@@ -409,6 +409,10 @@ against a real `DecisionEngine` and the failures were all silent.
   also rejects embedded credentials.
 - **Fixed: `register_network_handlers` could patch the wrong `policy` module**
   when both trees are on `sys.path`; ShugoCore's is now resolved by file path.
+- **Fixed: `nrr_adapter` was missing from the wheel.** `shugonet_runtime`
+  imports it unconditionally, so a 0.5.3 build without it would have shipped a
+  client runtime that raised `ModuleNotFoundError` on install. Added to
+  `py-modules`.
 - **Tests**: new `tests/test_shugocore_integration.py` (10 tests) drives a real
   `ExecutionLayer`/`FallbackController` in a subprocess with `sys.modules`
   deliberately shadowed — the first test in the suite able to reproduce these
