@@ -40,6 +40,14 @@ _PRIVATE_PREFIX = "_shugocore_"
 _REQUIRED_ATTRS = {"security": ("sanitize_text", "redact"),
                    "audit": ("AuditChain",)}
 
+# Provenance (``shared_from``) cap. Must match ShugoCore: its
+# ``MemoryManager.import_shared_facts`` writes ``sanitize_text(source, 64)``
+# and ``SemanticMemory.count_shared`` matches on a LIKE pattern built from
+# ``sanitize_text(source, 64)``. At 48 a peer id longer than 48 chars was
+# stored truncated here but looked up untruncated there, so the provenance
+# lookup silently missed.
+PROVENANCE_MAX = 64
+
 
 def _checkout_dir(path: Optional[str] = None) -> str:
     """Absolute path of a usable ShugoCore checkout, else ""."""
@@ -181,15 +189,45 @@ def sanitize_text(text: Any, max_length: int = 2048) -> str:
     return _local(text, max_length)
 
 
+# Secret-looking keys that ShugoCore's ``security.redact`` does not cover.
+# Its pattern is (api[-_]?key|apikey|authorization|token|secret|password|
+# credential) -- it has no ``passwd``/``key`` alternative, so delegating
+# wholesale would newly leak values that Shogunet's own ``redact`` masks.
+# The union of both is what actually reaches a log handler.
+_EXTRA_SECRET_KEYS = frozenset({"passwd", "key", "pwd", "passphrase",
+                                "private_key", "access_token", "refresh_token"})
+
+
+def _redact_extra_keys(value: Any) -> Any:
+    """Second pass masking the keys ShugoCore's redact does not match."""
+    if isinstance(value, dict):
+        out = {}
+        for key, val in value.items():
+            if isinstance(key, str) and key.strip().lower() in _EXTRA_SECRET_KEYS:
+                out[key] = "[REDACTED]"
+            else:
+                out[key] = _redact_extra_keys(val)
+        return out
+    if isinstance(value, (list, tuple)):
+        rebuilt = [_redact_extra_keys(item) for item in value]
+        return tuple(rebuilt) if isinstance(value, tuple) else rebuilt
+    return value
+
+
 def redact(value: Any) -> Any:
-    """ShugoCore's redact when present, else the local equivalent."""
+    """ShugoCore's redact when present, else the local equivalent.
+
+    Always followed by :func:`_redact_extra_keys`, so the result masks the
+    union of both key sets regardless of which backend is active. Delegation
+    can only ever make redaction stricter, never looser.
+    """
     if "security" in _LOADED:
         try:
-            return _LOADED["security"].redact(value)
+            return _redact_extra_keys(_LOADED["security"].redact(value))
         except Exception:
             pass
     from security import redact as _local
-    return _local(value)
+    return _redact_extra_keys(_local(value))
 
 
 def validate_url(url: str, allowed_hosts: Optional[List[str]] = None,
@@ -325,7 +363,10 @@ class _ShugocoreStoreAdapter:
     # -- key helpers ---------------------------------------------------------
 
     def make_key(self, origin: str, fact_id: int) -> str:
-        return f"{sanitize_text(origin, 48) or self.agent_id}:{int(fact_id) & 0xFFFFFFFF}"
+        # Capped at PROVENANCE_MAX, not a private number: this must be at
+        # least as long as the ``shared_from`` cap used to persist the same
+        # peer id, or a long id round-trips truncated and stops matching.
+        return f"{sanitize_text(origin, PROVENANCE_MAX) or self.agent_id}:{int(fact_id) & 0xFFFFFFFF}"
 
     def _origin_of(self, key: str) -> str:
         return str(key).rpartition(":")[0] or self.agent_id
@@ -371,7 +412,8 @@ class _ShugocoreStoreAdapter:
         ``SemanticMemory`` re-embeds content deterministically with the very
         algorithm the mesh uses, so a re-embed is lossless.
         """
-        key_origin = sanitize_text(origin or self.agent_id, 48) or self.agent_id
+        key_origin = sanitize_text(origin or self.agent_id, PROVENANCE_MAX) \
+            or self.agent_id
         clean_kind = sanitize_text(kind, 32) or "fact"
         clean_salience = max(0.0, float(salience))
         with self._lock:
@@ -436,7 +478,7 @@ class _ShugocoreStoreAdapter:
             return tracked
         shared_from = (metadata or {}).get("shared_from") \
             if isinstance(metadata, dict) else None
-        source = sanitize_text(shared_from, 48) if shared_from else None
+        source = sanitize_text(shared_from, PROVENANCE_MAX) if shared_from else None
         if not source or source == self.agent_id:
             return None
         key = self.make_key(source, row_id)
@@ -540,8 +582,19 @@ class _ShugocoreStoreAdapter:
         ``memory_sync_conflict_storm`` guard.
         """
         if self._manager is not None:
-            return self._manager.import_shared_facts(facts, source=source)
-        origin = sanitize_text(source, 48) or "unknown"
+            # MemoryManager.import_shared_facts opens with
+            # enforce_write("tier2", ...) and raises PermissionError when the
+            # host has not granted the mesh a write gate. That is a governance
+            # decision, not a transport fault, so it must not propagate into
+            # the sync path: report it as fully skipped instead of raising
+            # through MemorySyncNode's import loop.
+            try:
+                return self._manager.import_shared_facts(facts, source=source)
+            except PermissionError as exc:
+                logger.warning("tier2 write gate refused mesh import: %s", exc)
+                return {"imported": 0, "skipped": len(facts or []),
+                        "duplicates": 0, "refused": True}
+        origin = sanitize_text(source, PROVENANCE_MAX) or "unknown"
         imported = skipped = duplicates = 0
         for fact in facts or []:
             if not isinstance(fact, dict):

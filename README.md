@@ -6,7 +6,7 @@
 > networks.
 
 [![PyPI](https://img.shields.io/pypi/v/shugonet)](https://pypi.org/project/shugonet/)
-![Release](https://img.shields.io/badge/release-v0.5.3-blue)
+![Release](https://img.shields.io/badge/release-v0.5.4-blue)
 ![Python](https://img.shields.io/badge/python-3.9%E2%80%933.12-blue)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Android%20%28Termux%2FChaquopy%29-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -373,6 +373,61 @@ and `sys.path` order are process-global, so an in-process test could not
 reproduce the failure mode it guards against.
 
 ## Changelog
+
+### 0.5.4
+
+ShugoCore 1.30.24 compatibility pass. Closes the data-loss and silent-failure
+gaps left open by 0.5.3, verified live against a 1.30.24 checkout rather than
+against the 1.30.5 tree the 0.5.3 work was written for.
+
+- **Fixed: NRR sensor events dropped their 3D extents.** ShugoCore's
+  `nrr.schema.NRRSensorEvent` declares an `extents` field; Shogunet's mirror
+  did not, so every scene result crossing the mesh silently lost each event's
+  bounding extent — and the field was absent from `to_dict`/`from_dict`, so it
+  could not survive the wire even if a peer sent it. Added, wired through
+  validation and both directions, and tolerant of peers that omit it.
+  `NRRSensorEvent` is now field-for-field identical to ShugoCore's, as are all
+  six NRR dataclasses (verified against 1.30.24).
+- **Fixed: a Tier-2 write-gate refusal crashed the mesh sync path.**
+  `MemoryManager.import_shared_facts` opens with `enforce_write("tier2", …)`
+  and raises `PermissionError` when the host has not granted the mesh a write
+  gate. The adapter delegated unguarded, so a governance decision escaped as
+  an exception through `MemorySyncNode`'s import loop. It is now caught and
+  reported as `{"imported": 0, "skipped": N, "refused": True}` — still
+  fail-closed, but observable instead of fatal.
+- **Fixed: peer-id truncation made provenance lookups miss.** The adapter
+  capped `shared_from` and the mesh key at 48 characters while ShugoCore writes
+  and matches it at 64, so a peer id longer than 48 was stored truncated and
+  looked up in full. Introduced a single `PROVENANCE_MAX = 64` and routed
+  `make_key`, `store_fact`, `_key_for_row` and `import_shared_facts` through
+  it, so the whole identity path shares one cap.
+- **Fixed: delegating redaction leaked `passwd`.** ShugoCore's secret-key
+  pattern is `api[-_]?key|apikey|authorization|token|secret|password|
+  credential` — it has no `passwd`/`pwd`/`passphrase`/`private_key`
+  alternative, so preferring its hardened `redact` (as 0.5.3 made the default)
+  would have *newly* leaked values Shogunet's own `redact` masks. The bridge
+  now always applies a second masking pass, so delegation can only make
+  redaction stricter, never looser. Non-secret keys are untouched and
+  ShugoCore's own matches still apply.
+- **Unchanged, by design**: `sanitize_text` still differs between the two
+  projects (ShugoCore strips bidi/zero-width characters, collapses whitespace
+  and caps at 2000; Shogunet's local copy replaces non-printables, keeps
+  whitespace and caps at 2048). Reconciling it would change standalone
+  behaviour and the fact-content hashes peers dedupe on, so it needs a
+  deliberate decision, not a patch release.
+- **Known gap (unchanged)**: ShugoCore's `ShugonetAgentRuntime` still has no
+  spatial capability of any kind — no index, no `spatial_observation` /
+  `spatial_query` handling, no spatial topics. The spatial layer lives entirely
+  in Shogunet. So the three spatial actions
+  (`network_spatial_observe`, `network_spatial_query`, `network_fleet_map`)
+  register but can only ever return `refused`. This is a missing capability,
+  not an integration defect, and the fail-closed refusal is the correct
+  behaviour until ShugoCore grows one. NRR *does* exist there
+  (`nrr/adapter.py: render / request_scene`), so `network_nrr_render` and
+  `network_nrr_scene` are wired to delegate there in a follow-up.
+- **6 new tests** covering extents round-trip, the write-gate refusal, the
+  single provenance cap, and the extra redaction keys. Suite now 354 tests.
+- Version bumped 0.5.3 → 0.5.4 (patch only — no wire-format change).
 
 ### 0.5.3
 

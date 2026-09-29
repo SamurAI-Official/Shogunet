@@ -1,5 +1,6 @@
 """Shogunet <-> ShugoCore bridge + adapter tests (hermetic, no ShugoCore)."""
 
+import dataclasses
 import unittest
 
 import shugocore_adapter
@@ -258,6 +259,98 @@ class TestShugonetSpatialAndNRRActions(unittest.TestCase):
             self.assertIn(result["status"], ("success", "refused"), action)
             self.assertNotIn("unknown network action", result.get("reason",
                                                                    ""), action)
+
+
+class TestShugocoreIntegrationContract(unittest.TestCase):
+    """Contract details that a duck-typed double cannot express."""
+
+    def test_nrr_sensor_event_carries_extents(self):
+        # ShugoCore's nrr.schema.NRRSensorEvent declares `extents`; without it
+        # a scene result crossing the mesh silently drops every 3D extent.
+        import nrr_adapter
+        fields = [f.name for f in dataclasses.fields(nrr_adapter.NRRSensorEvent)]
+        self.assertIn("extents", fields)
+        extents = nrr_adapter.Coordinate3D(x=0.5, y=0.5, z=0.5)
+        ev = nrr_adapter.NRRSensorEvent(
+            event_id="e1",
+            region=nrr_adapter.Coordinate3D(x=1.0, y=2.0, z=3.0),
+            extents=extents)
+        payload = ev.to_dict()
+        self.assertEqual(payload["extents"]["x"], 0.5)
+        # ...and survives the wire hop as a full Coordinate3D.
+        self.assertEqual(nrr_adapter.NRRSensorEvent.from_dict(payload).extents,
+                         extents)
+        # An absent extents must not explode (older peers omit it).
+        self.assertIsNone(
+            nrr_adapter.NRRSensorEvent.from_dict({"event_id": "e2"}).extents)
+
+    def test_nrr_scene_result_carries_event_extents(self):
+        import nrr_adapter
+        payload = {"frame_id": "f", "status": "ok", "motion_events": [
+            {"event_id": "e1", "event_type": "motion",
+             "region": {"x": 1.0, "y": 2.0, "z": 3.0},
+             "extents": {"x": 0.5, "y": 0.5, "z": 0.5},
+             "motion_score": 0.5, "source_frame_id": "f"}]}
+        result = nrr_adapter.NRRSceneResult.from_dict(payload)
+        self.assertEqual(result.motion_events[0].extents,
+                         nrr_adapter.Coordinate3D(x=0.5, y=0.5, z=0.5))
+
+    def test_provenance_cap_matches_shugocore(self):
+        # ShugoCore writes and looks up shared_from at 64 chars. At 48 a long
+        # peer id was stored truncated but looked up in full.
+        from shugocore_bridge import PROVENANCE_MAX
+        self.assertEqual(PROVENANCE_MAX, 64)
+
+    def test_redact_masks_keys_shugocore_misses(self):
+        # ShugoCore's secret pattern has no `passwd`; delegating to it alone
+        # would leak a value Shogunet's own redact masks.
+        for key in ("passwd", "pwd", "passphrase", "private_key"):
+            with self.subTest(key=key):
+                self.assertEqual(redact({key: "s"})[key], "[REDACTED]")
+        # ShugoCore-only keys still work through the local path.
+        self.assertEqual(redact({"token": "s"})["token"], "[REDACTED]")
+        # Nested and in-container values are covered too.
+        self.assertEqual(redact({"a": {"passwd": "s"}})["a"]["passwd"],
+                         "[REDACTED]")
+        self.assertEqual(redact([{"passwd": "s"}])[0]["passwd"], "[REDACTED]")
+        # Non-secret values are untouched.
+        self.assertEqual(redact({"peer": "agent-b"})["peer"], "agent-b")
+
+    def test_import_shared_facts_does_not_raise_on_write_gate(self):
+        # MemoryManager.import_shared_facts calls enforce_write() and raises
+        # PermissionError; a governance refusal must not escape into the mesh.
+        from shugocore_bridge import _ShugocoreStoreAdapter
+
+        class _GateClosedTier2:
+            """Bare tier, never reached: the manager raises first."""
+
+            def content_exists(self, content):
+                raise AssertionError("must not reach the tier-2 path")
+
+        class _GateClosed:
+            def __init__(self):
+                self.tier2 = _GateClosedTier2()
+
+            def import_shared_facts(self, facts, source=None):
+                raise PermissionError("write gate violation: tier2")
+
+        store = _ShugocoreStoreAdapter("agent-a", _GateClosed())
+        result = store.import_shared_facts([{"content": "x"}], "agent-b")
+        self.assertEqual(result["imported"], 0)
+        self.assertEqual(result["skipped"], 1)
+        self.assertTrue(result["refused"])
+
+    def test_provenance_identity_path_uses_one_cap(self):
+        # make_key/store_fact/_key_for_row must all agree, or a long peer id
+        # round-trips truncated and stops matching its own provenance record.
+        from shugocore_bridge import (PROVENANCE_MAX, _ShugocoreStoreAdapter)
+        long_id = "p" * 60
+        # make_key is pure string work -- it never touches the tier-2 store.
+        store = _ShugocoreStoreAdapter("agent-a", object())
+        key = store.make_key(long_id, 7)
+        self.assertTrue(key.startswith(long_id + ":"),
+                        "mesh key truncated the peer id: %r" % key)
+        self.assertEqual(PROVENANCE_MAX, 64)
 
 
 if __name__ == "__main__":

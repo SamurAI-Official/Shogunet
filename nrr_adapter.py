@@ -184,10 +184,17 @@ class SceneEntity:
 
 @dataclass
 class NRRSensorEvent:
-    """One motion / change-detection event from the peripheral worker."""
+    """One motion / change-detection event from the peripheral worker.
+
+    ``extents`` mirrors ShugoCore's ``nrr.schema.NRRSensorEvent`` -- the
+    half-extents of the region's bounding box. It is declared there and not
+    here previously, so a scene result crossing the mesh silently dropped
+    every event's 3D extent.
+    """
     event_id: str = ""
     event_type: str = "motion"
     region: Optional[Coordinate3D] = None
+    extents: Optional[Coordinate3D] = None
     motion_score: float = 0.0
     source_frame_id: str = ""
     previous_frame_id: str = ""
@@ -203,6 +210,8 @@ class NRRSensorEvent:
             raise ValueError("unknown event_type " + repr(self.event_type))
         if self.region is not None:
             self.region.validate()
+        if self.extents is not None:
+            self.extents.validate()
         if not (0.0 <= self.motion_score <= 1.0):
             raise ValueError("motion_score out of range 0..1")
         if not (0.0 <= self.confidence <= 1.0):
@@ -216,6 +225,7 @@ class NRRSensorEvent:
             "event_id": self.event_id,
             "event_type": self.event_type,
             "region": self.region.to_dict() if self.region else None,
+            "extents": self.extents.to_dict() if self.extents else None,
             "motion_score": self.motion_score,
             "source_frame_id": self.source_frame_id,
             "previous_frame_id": self.previous_frame_id,
@@ -228,10 +238,13 @@ class NRRSensorEvent:
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> "NRRSensorEvent":
         region = data.get("region")
+        extents = data.get("extents")
         return NRRSensorEvent(
             event_id=str(data.get("event_id", ""))[:128],
             event_type=str(data.get("event_type", "motion")),
             region=Coordinate3D.from_dict(region) if isinstance(region, dict) else None,
+            extents=(Coordinate3D.from_dict(extents)
+                     if isinstance(extents, dict) else None),
             motion_score=float(data.get("motion_score", 0.0)),
             source_frame_id=str(data.get("source_frame_id", ""))[:128],
             previous_frame_id=str(data.get("previous_frame_id", ""))[:128],
